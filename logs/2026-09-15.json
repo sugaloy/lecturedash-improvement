@@ -1,0 +1,26 @@
+[
+  {
+    "id": "log_1789479972554_em15e",
+    "lecturerId": "system",
+    "lecturerName": "System Auto-Reset",
+    "action": "manual_checkout",
+    "timestamp": 1789479972554,
+    "details": "Daily attendance reset triggered for date 2026-09-15."
+  },
+  {
+    "id": "log_1789480999317_5x3xu",
+    "lecturerId": "lecturer_1",
+    "lecturerName": "Dr. Aris Giatma",
+    "action": "device_detected",
+    "timestamp": 1789480999316,
+    "details": "Device (fc:a1:3e:8b:2d:4c / 192.168.1.102) auto-detected on Lecturer Room Router (Direct AP) (1 hop). Lecturer checked in."
+  },
+  {
+    "id": "log_1789481109987_lfzn5",
+    "lecturerId": "lecturer_1",
+    "lecturerName": "Dr. Aris Giatma",
+    "action": "status_change",
+    "timestamp": 1789481109987,
+    "details": "Traceroute probe: 1 hop(s), 1.8ms (Lecturer Room Router (Direct AP)) to IP 192.168.1.102"
+  }
+]

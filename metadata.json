@@ -1,0 +1,6 @@
+{
+  "name": "Lecturer Presence Board",
+  "description": "A digital signage and presence board for university lecturer rooms, featuring local network device presence detection, customizable profile and away photos, and a secure admin interface.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

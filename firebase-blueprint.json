@@ -1,0 +1,61 @@
+{
+  "entities": {
+    "Lecturer": {
+      "title": "Lecturer",
+      "description": "Represents a lecturer and their status",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "name": { "type": "string" },
+        "macAddress": { "type": "string" },
+        "ipAddress": { "type": "string" },
+        "pin": { "type": "string" },
+        "profilePhotoUrl": { "type": "string" },
+        "awayPhotoUrl": { "type": "string" },
+        "status": { "type": "string", "enum": ["Available", "Away", "Meeting", "Class", "Out of Office"] },
+        "customMessage": { "type": "string" },
+        "isPresentToday": { "type": "boolean" },
+        "isDeviceDetected": { "type": "boolean" },
+        "lastSeen": { "type": "integer" }
+      },
+      "required": ["id", "name", "macAddress", "pin", "status", "isPresentToday", "isDeviceDetected", "lastSeen"]
+    },
+    "PresenceLog": {
+      "title": "PresenceLog",
+      "description": "Represents an audit log of presence activity",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "lecturerId": { "type": "string" },
+        "lecturerName": { "type": "string" },
+        "action": { "type": "string", "enum": ["device_detected", "device_lost", "manual_checkin", "manual_checkout", "status_change"] },
+        "timestamp": { "type": "integer" },
+        "details": { "type": "string" }
+      },
+      "required": ["lecturerId", "lecturerName", "action", "timestamp", "details"]
+    },
+    "SystemConfig": {
+      "title": "SystemConfig",
+      "description": "Represents system configuration, such as the last daily reset date",
+      "type": "object",
+      "properties": {
+        "lastResetDate": { "type": "string" }
+      },
+      "required": ["lastResetDate"]
+    }
+  },
+  "firestore": {
+    "lecturers/{lecturerId}": {
+      "schema": "Lecturer",
+      "description": "Active lecturer records"
+    },
+    "logs/{logId}": {
+      "schema": "PresenceLog",
+      "description": "History logs of lecturer presence changes"
+    },
+    "system/config": {
+      "schema": "SystemConfig",
+      "description": "Global system configurations"
+    }
+  }
+}
