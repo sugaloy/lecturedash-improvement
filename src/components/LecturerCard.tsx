@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { Lecturer } from '../types';
-import { Clock, Wifi, WifiOff, MessageSquare, Route, MapPin } from 'lucide-react';
+import { Clock, Wifi, WifiOff, MessageSquare, Route, MapPin, Bluetooth } from 'lucide-react';
 
 interface LecturerCardProps {
   lecturer: Lecturer;
@@ -205,41 +205,53 @@ export const LecturerCard: React.FC<LecturerCardProps> = ({ lecturer, onCardClic
             </p>
           )}
 
-          {/* Network Traceroute & Hop Distance Badge */}
-          {networkInfo && (
+          {/* Network Traceroute & Hop Distance Badge - ONLY show if lecturer is detected online */}
+          {isPresentToday && isDeviceDetected && status !== 'Out of Office' && networkInfo && (networkInfo.hops > 0 || networkInfo.detectionMethod === 'ble') && (
             <div className="mt-1 pt-1.5 border-t border-slate-100 flex items-center justify-between">
-              <button
-                type="button"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  onTracerouteClick?.(activeLecturer);
-                }}
-                title={`Click to inspect traceroute hops to ${activeLecturer.ipAddress || 'device'}`}
-                className={`flex items-center space-x-1.5 px-2 py-1 rounded-lg text-[10px] font-bold transition-all border cursor-pointer ${
-                  networkInfo.hops === 1
-                    ? 'bg-emerald-50/80 text-emerald-700 border-emerald-200/60 hover:bg-emerald-100'
-                    : 'bg-amber-50/80 text-amber-700 border-amber-200/60 hover:bg-amber-100'
-                }`}
-              >
-                <Route className="w-3 h-3 shrink-0" />
-                <span className="truncate max-w-[130px]">
-                  {networkInfo.hops === 1 ? '1 Hop (In Room)' : `${networkInfo.hops} Hops (Staff AP)`}
-                </span>
-                <span className="font-mono text-[9px] opacity-75">
-                  {networkInfo.latencyMs}ms
-                </span>
-              </button>
+              {networkInfo.detectionMethod === 'ble' ? (
+                <div className="flex items-center space-x-1.5 px-2 py-1 rounded-lg text-[10px] font-bold bg-blue-50/90 text-blue-700 border border-blue-200/80 shadow-2xs">
+                  <Bluetooth className="w-3.5 h-3.5 text-blue-600 shrink-0 animate-pulse" />
+                  <span>In Room (BLE Beacon)</span>
+                  {networkInfo.rssi && (
+                    <span className="font-mono text-[9px] opacity-75">{networkInfo.rssi}dBm</span>
+                  )}
+                </div>
+              ) : (
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onTracerouteClick?.(activeLecturer);
+                  }}
+                  title={`Click to inspect traceroute hops to ${activeLecturer.ipAddress || 'device'}`}
+                  className={`flex items-center space-x-1.5 px-2 py-1 rounded-lg text-[10px] font-bold transition-all border cursor-pointer ${
+                    networkInfo.hops === 1
+                      ? 'bg-emerald-50/80 text-emerald-700 border-emerald-200/60 hover:bg-emerald-100'
+                      : 'bg-amber-50/80 text-amber-700 border-amber-200/60 hover:bg-amber-100'
+                  }`}
+                >
+                  <Route className="w-3 h-3 shrink-0" />
+                  <span className="truncate max-w-[130px]">
+                    {networkInfo.hops === 1 ? '1 Hop (In Room)' : `${networkInfo.hops} Hops (Routed AP)`}
+                  </span>
+                  <span className="font-mono text-[9px] opacity-75">
+                    {networkInfo.latencyMs}ms
+                  </span>
+                </button>
+              )}
 
-              <button
-                type="button"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  onTracerouteClick?.(activeLecturer);
-                }}
-                className="text-[10px] font-semibold text-indigo-600 hover:text-indigo-800 hover:underline flex items-center cursor-pointer ml-1"
-              >
-                Trace ➔
-              </button>
+              {networkInfo.detectionMethod !== 'ble' && (
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onTracerouteClick?.(activeLecturer);
+                  }}
+                  className="text-[10px] font-semibold text-indigo-600 hover:text-indigo-800 hover:underline flex items-center cursor-pointer ml-1"
+                >
+                  Trace ➔
+                </button>
+              )}
             </div>
           )}
         </div>

@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { Lecturer, TracerouteHop } from '../types';
 import { 
-  X, Route, Wifi, Server, Smartphone, ArrowRight, Activity, 
+  X, Route, Wifi, WifiOff, Server, Smartphone, ArrowRight, Activity, 
   HelpCircle, RefreshCw, CheckCircle2, AlertTriangle, ShieldCheck, MapPin, Radio
 } from 'lucide-react';
 
@@ -32,14 +32,17 @@ export const TracerouteModal: React.FC<TracerouteModalProps> = ({
 
   if (!isOpen) return null;
 
+  const isOnline = !!activeLecturer.isPresentToday && !!activeLecturer.isDeviceDetected && activeLecturer.status !== 'Out of Office';
   const networkInfo = activeLecturer.networkInfo;
-  const hops = networkInfo?.hops ?? 1;
-  const latency = networkInfo?.latencyMs ?? 2.1;
-  const ip = activeLecturer.ipAddress || networkInfo?.ip || '192.168.1.45';
+  const hops = isOnline ? (networkInfo?.hops ?? 1) : 0;
+  const latency = isOnline ? (networkInfo?.latencyMs ?? 2.1) : 0;
+  const ip = activeLecturer.ipAddress || networkInfo?.ip || '192.168.73.45';
   const mac = activeLecturer.macAddress || 'fc:a1:3e:8b:2d:4c';
-  const zoneName = networkInfo?.detectedZone || (hops === 1 ? 'Lecturer Room Router (Direct AP)' : 'Staff Room Access Point (Routed)');
-  const isDirect = hops === 1;
-  const isStaffRoom = hops === 2 || zoneName.toLowerCase().includes('staff');
+  const zoneName = isOnline 
+    ? (networkInfo?.detectedZone || (hops === 1 ? 'Lecturer Room Router (Direct AP)' : 'Staff Room Access Point (Routed)'))
+    : 'Offline / Disconnected';
+  const isDirect = isOnline && hops === 1;
+  const isStaffRoom = isOnline && (hops === 2 || zoneName.toLowerCase().includes('staff'));
 
   const handleRunTraceroute = async () => {
     setIsRunningTrace(true);
@@ -112,11 +115,13 @@ export const TracerouteModal: React.FC<TracerouteModalProps> = ({
               <div className="flex items-center space-x-2">
                 <h3 className="font-bold text-lg text-white">Network Traceroute Diagnostics</h3>
                 <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full uppercase tracking-wider ${
-                  isDirect 
-                    ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30' 
-                    : 'bg-amber-500/20 text-amber-300 border border-amber-500/30'
+                  !isOnline
+                    ? 'bg-slate-500/20 text-slate-300 border border-slate-500/30'
+                    : isDirect 
+                      ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30' 
+                      : 'bg-amber-500/20 text-amber-300 border border-amber-500/30'
                 }`}>
-                  {hops} {hops === 1 ? 'Hop' : 'Hops'}
+                  {isOnline ? `${hops} ${hops === 1 ? 'Hop' : 'Hops'}` : 'Offline'}
                 </span>
               </div>
               <p className="text-xs text-slate-400">
@@ -139,14 +144,14 @@ export const TracerouteModal: React.FC<TracerouteModalProps> = ({
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
             <div className="bg-slate-50 p-3.5 rounded-2xl border border-slate-200">
               <span className="text-[10px] font-bold uppercase text-slate-400 tracking-wider block">Network Hops</span>
-              <p className={`text-xl font-black mt-0.5 ${isDirect ? 'text-emerald-600' : 'text-amber-600'}`}>
-                {hops} <span className="text-xs font-semibold text-slate-500">{hops === 1 ? 'Hop (Direct)' : 'Hops (Routed)'}</span>
+              <p className={`text-xl font-black mt-0.5 ${!isOnline ? 'text-slate-500' : isDirect ? 'text-emerald-600' : 'text-amber-600'}`}>
+                {isOnline ? hops : '0'} <span className="text-xs font-semibold text-slate-500">{!isOnline ? '(Offline)' : hops === 1 ? 'Hop (Direct)' : 'Hops (Routed)'}</span>
               </p>
             </div>
             <div className="bg-slate-50 p-3.5 rounded-2xl border border-slate-200">
               <span className="text-[10px] font-bold uppercase text-slate-400 tracking-wider block">Ping Latency</span>
               <p className="text-xl font-black text-slate-900 mt-0.5">
-                {latency} <span className="text-xs font-semibold text-slate-500">ms</span>
+                {latency} <span className="text-xs font-semibold text-slate-500">{isOnline ? 'ms' : 'N/A'}</span>
               </p>
             </div>
             <div className="bg-slate-50 p-3.5 rounded-2xl border border-slate-200">
@@ -205,58 +210,73 @@ export const TracerouteModal: React.FC<TracerouteModalProps> = ({
               </span>
             </div>
 
-            <div className="space-y-2.5">
-              {hopsList.map((hop, idx) => {
-                const isFinal = idx === hopsList.length - 1;
-                return (
-                  <div 
-                    key={hop.hop}
-                    className={`p-3.5 rounded-2xl border transition-all flex items-center justify-between ${
-                      isFinal 
-                        ? 'bg-indigo-50/50 border-indigo-200' 
-                        : 'bg-slate-50 border-slate-200'
-                    }`}
-                  >
-                    <div className="flex items-center space-x-3.5">
-                      <div className={`w-8 h-8 rounded-xl flex items-center justify-center font-mono font-bold text-xs shrink-0 ${
+            {!isOnline ? (
+              <div className="p-4 bg-slate-50 border border-slate-200 rounded-2xl flex items-start space-x-3 text-xs text-slate-600">
+                <WifiOff className="w-5 h-5 text-slate-400 shrink-0 mt-0.5" />
+                <div className="space-y-1">
+                  <strong className="font-bold text-slate-800 text-sm block">Device Offline — Not Connected to Network</strong>
+                  <p>
+                    {activeLecturer.name}'s device is not currently detected on the local Wi-Fi network. Routing hops are not shown while offline.
+                  </p>
+                </div>
+              </div>
+            ) : (
+              <div className="space-y-2.5">
+                {hopsList.map((hop, idx) => {
+                  const isFinal = idx === hopsList.length - 1;
+                  return (
+                    <div 
+                      key={hop.hop}
+                      className={`p-3.5 rounded-2xl border transition-all flex items-center justify-between ${
                         isFinal 
-                          ? 'bg-indigo-600 text-white shadow-sm' 
-                          : 'bg-slate-200 text-slate-700'
-                      }`}>
-                        #{hop.hop}
-                      </div>
-
-                      <div className="space-y-0.5">
-                        <div className="flex items-center space-x-2">
-                          {isFinal ? (
-                            <Smartphone className="w-3.5 h-3.5 text-indigo-600" />
-                          ) : (
-                            <Server className="w-3.5 h-3.5 text-slate-500" />
-                          )}
-                          <span className="font-mono text-xs font-bold text-slate-900">
-                            {hop.ip}
-                          </span>
-                          {hop.hostname && (
-                            <span className="text-[10px] text-slate-400 font-mono hidden sm:inline">
-                              ({hop.hostname})
-                            </span>
-                          )}
+                          ? 'bg-indigo-50/50 border-indigo-200' 
+                          : 'bg-slate-50 border-slate-200'
+                      }`}
+                    >
+                      <div className="flex items-center space-x-3.5">
+                        <div className={`w-8 h-8 rounded-xl flex items-center justify-center font-mono font-bold text-xs shrink-0 ${
+                          isFinal 
+                            ? 'bg-indigo-600 text-white shadow-sm' 
+                            : 'bg-slate-200 text-slate-700'
+                        }`}>
+                          #{hop.hop}
                         </div>
-                        <p className="text-[11px] text-slate-500">
-                          {hop.label || (isFinal ? `Lecturer Device (${activeLecturer.name})` : 'Intermediate Gateway')}
-                        </p>
+
+                        <div className="space-y-0.5">
+                          <div className="flex items-center space-x-2">
+                            {isFinal ? (
+                              <Smartphone className="w-3.5 h-3.5 text-indigo-600" />
+                            ) : (
+                              <Server className="w-3.5 h-3.5 text-slate-500" />
+                            )}
+                            <span className="font-mono text-xs font-bold text-slate-900">
+                              {hop.ip}
+                            </span>
+                            {hop.hostname && (
+                              <span className="text-[10px] text-slate-400 font-mono hidden sm:inline">
+                                ({hop.hostname})
+                              </span>
+                            )}
+                          </div>
+                          <span className="text-[11px] text-slate-500 block">
+                            {hop.label || (isFinal ? `Lecturer Device (${activeLecturer.name})` : 'Intermediate Gateway')}
+                          </span>
+                        </div>
+                      </div>
+
+                      <div className="text-right">
+                        <span className="font-mono font-bold text-xs text-slate-700 block">
+                          {hop.rttMs} ms
+                        </span>
+                        <span className="text-[9px] font-bold uppercase tracking-wider text-emerald-600 block">
+                          Reached
+                        </span>
                       </div>
                     </div>
-
-                    <div className="text-right">
-                      <span className="text-xs font-mono font-bold text-emerald-600 bg-emerald-50 px-2 py-0.5 rounded-lg border border-emerald-100">
-                        {hop.rttMs} ms
-                      </span>
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
+                  );
+                })}
+              </div>
+            )}
           </div>
 
           {/* Explanation Accordion on Why IP Changes between Lecturer Room & Staff Room */}

@@ -6,3 +6,8 @@ coverage/
 *.log
 .env*
 !.env.example
+*.tar.gz
+*.7z
+*.zip
+presence_db*.json
+*.backup_*.json

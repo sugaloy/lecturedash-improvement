@@ -146,7 +146,7 @@ export default function App() {
   }
 
   return (
-    <div id="app-root-container" className="min-h-screen bg-slate-100 text-slate-900 flex flex-col font-sans antialiased">
+    <div id="app-root-container" className="min-h-screen min-h-[100dvh] w-full bg-slate-100 text-slate-900 flex flex-col font-sans antialiased overflow-x-hidden">
       
       {/* Universal Desktop/Mobile Site Navigation Bar */}
       <header className="bg-white border-b border-slate-200/80 sticky top-0 z-40 shadow-xs backdrop-blur-md bg-white/95">
@@ -154,7 +154,7 @@ export default function App() {
           
           {/* Brand/Title */}
           <div className="flex items-center space-x-3 cursor-pointer" onClick={() => setActiveTab('board')}>
-            <div className="h-9 w-9 bg-slate-900 text-white rounded-xl flex items-center justify-center font-black text-sm tracking-widest shadow-xs">
+            <div className="h-9 w-9 bg-slate-900 text-white rounded-xl flex items-center justify-center font-black text-sm tracking-widest shadow-xs shrink-0">
               LP
             </div>
             <div>
@@ -164,7 +164,7 @@ export default function App() {
           </div>
 
           {/* Navigation Controls */}
-          <nav className="flex space-x-1.5">
+          <nav className="flex space-x-1 sm:space-x-1.5 overflow-x-auto scrollbar-none py-1">
             {[
               { id: 'board', label: 'Presence Board', icon: LayoutDashboard },
               { id: 'network', label: 'Network & Traceroute', icon: Route },

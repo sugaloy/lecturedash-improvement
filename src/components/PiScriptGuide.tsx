@@ -1,5 +1,9 @@
 import React, { useState } from 'react';
-import { Copy, Check, Terminal, Cpu, AlertTriangle, ShieldCheck, CreditCard, Layers, Zap, Download, RefreshCw, CheckCircle2, ArrowRight, Shield } from 'lucide-react';
+import { 
+  Copy, Check, Terminal, Cpu, AlertTriangle, ShieldCheck, 
+  CreditCard, Layers, Zap, Download, RefreshCw, CheckCircle2, 
+  ArrowRight, Shield, Wifi, Radio, ChevronRight, Activity, ExternalLink
+} from 'lucide-react';
 
 export const PiScriptGuide: React.FC = () => {
   const [activeGuideTab, setActiveGuideTab] = useState<'oneclick' | 'wifi' | 'rfid' | 'pn532' | 'autostart'>('oneclick');
@@ -58,7 +62,7 @@ SCAN_INTERVAL = 60
 # Autonomous Subnet Discovery: Automatically inspects local interfaces (wlan0, eth0)
 # and retrieves registered classroom/AP subnets from the server.
 AUTO_DISCOVER_SUBNETS = True
-DEFAULT_FALLBACK_SUBNETS = ["192.168.1.0/24", "192.168.2.0/24"]
+DEFAULT_FALLBACK_SUBNETS = ["192.168.73.0/26", "192.168.73.64/26", "192.168.73.128/26", "192.168.73.192/26"]
 # =====================
 
 def discover_active_subnets():
@@ -94,15 +98,15 @@ def discover_active_subnets():
                 if "/" in prefix:
                     subnets.add(prefix)
                 elif prefix.endswith("."):
-                    subnets.add(f"{prefix}0/24")
+                    subnets.add(f"{prefix}0/26")
+                    subnets.add(f"{prefix}64/26")
+                    subnets.add(f"{prefix}128/26")
+                    subnets.add(f"{prefix}192/26")
     except Exception:
         pass
 
-    # 3. Fallback defaults if no interfaces were resolved
     if not subnets:
-        for s in DEFAULT_FALLBACK_SUBNETS:
-            subnets.add(s)
-
+        return DEFAULT_FALLBACK_SUBNETS
     return sorted(list(subnets))
 
 def get_device_hops(ip):
@@ -120,28 +124,74 @@ def get_device_hops(ip):
             timeout=3
         )
         lines = [l.strip() for l in res.stdout.decode().splitlines() if l.strip() and not l.startswith("traceroute")]
-        hops = len(lines)
-        return max(1, hops)
+        if lines:
+            return max(1, len(lines))
     except Exception:
-        # Topology heuristic based on subnet
-        if ip.startswith("192.168.1."):
-            return 1
-        elif ip.startswith("192.168.2."):
-            return 2
-        return 3
+        pass
+
+    # Deterministic fallback based on 255.255.255.192 (/26) subnet division
+    try:
+        last_octet = int(ip.split(".")[-1])
+        block = last_octet // 64
+        if block == 0: return 1   # .0 - .63 = Direct AP (Lecturer Room)
+        elif block == 1: return 2 # .64 - .127 = Staff Room AP
+        else: return 3            # .128 - .255 = Lab / Corridor AP
+    except Exception:
+        return 1
+
+def scan_ble(duration_sec=3):
+    """
+    Pure passive Bluetooth Low Energy (BLE) beacon detection.
+    Zero pairing, zero connection, zero battery drain on target devices.
+    Listens for incoming advertising packets (iBeacon, Eddystone, BLE Badges, Smartwatches).
+    """
+    ble_devices = []
+    seen_ble_macs = set()
+    try:
+        cmd = ["hcitool", "lescan", "--duplicates"]
+        if os.geteuid() != 0:
+            cmd = ["sudo", "-n"] + cmd
+        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
+        time.sleep(duration_sec)
+        proc.terminate()
+        try:
+            stdout, _ = proc.communicate(timeout=1)
+        except Exception:
+            proc.kill()
+            stdout, _ = proc.communicate()
+
+        for line in stdout.splitlines():
+            m = re.match(r"^([0-9A-Fa-f:]{17})", line.strip())
+            if m:
+                mac = m.group(1).lower()
+                if mac not in seen_ble_macs:
+                    seen_ble_macs.add(mac)
+                    ble_devices.append({"mac": mac, "rssi": -65})
+        if ble_devices:
+            print(f"[+] Passive BLE: Captured {len(ble_devices)} broadcasting beacon/badge(s)")
+    except Exception:
+        pass
+    return ble_devices
 
 def scan_network():
     active_subnets = discover_active_subnets() if AUTO_DISCOVER_SUBNETS else DEFAULT_FALLBACK_SUBNETS
     print(f"\\n[Scanning] Autonomous ping sweep across {len(active_subnets)} subnet(s): {', '.join(active_subnets)}")
     
+    nmap_alive_ips = set()
     for subnet in active_subnets:
         try:
-            subprocess.run(["nmap", "-sn", subnet], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        except FileNotFoundError:
+            res = subprocess.run(["nmap", "-sn", "-oG", "-", subnet], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, timeout=15)
+            for line in res.stdout.splitlines():
+                if "Status: Up" in line:
+                    m = re.search(r"Host:\s+(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})", line)
+                    if m:
+                        nmap_alive_ips.add(m.group(1))
+        except Exception:
             pass
 
     devices = []
     seen_macs = set()
+    seen_ips = set()
     try:
         # Read the system ARP table cache (arp -an)
         arp_output = subprocess.check_output(["arp", "-an"]).decode("utf-8")
@@ -154,22 +204,38 @@ def scan_network():
                 mac = match.group(2).lower()
                 if mac not in seen_macs and mac != "ff:ff:ff:ff:ff:ff":
                     seen_macs.add(mac)
+                    seen_ips.add(ip)
                     hops = get_device_hops(ip)
                     devices.append({
                         "mac": mac,
                         "ip": ip,
                         "hops": hops
                     })
-                    print(f"[+] Active Device: IP={ip} | MAC={mac} | Hops={hops}")
+                    print(f"[+] Active Wi-Fi Device: IP={ip} | MAC={mac} | Hops={hops}")
                 
     except Exception as e:
         print(f"[-] Error reading ARP cache: {e}")
+
+    # Include alive IPs from routed subnets that might not populate the local ARP table
+    for alive_ip in nmap_alive_ips:
+        if alive_ip not in seen_ips and not alive_ip.endswith(".0") and not alive_ip.endswith(".63") and not alive_ip.endswith(".127"):
+            hops = get_device_hops(alive_ip)
+            devices.append({
+                "mac": "",
+                "ip": alive_ip,
+                "hops": hops
+            })
+            seen_ips.add(alive_ip)
         
     return devices
 
-def report_presence(devices):
-    print(f"[Reporting] Sending {len(devices)} active intranet devices to presence server...")
-    data = json.dumps({"devices": devices}).encode("utf-8")
+def report_presence(devices, ble_devices=None):
+    ble_count = len(ble_devices) if ble_devices else 0
+    print(f"[Reporting] Sending {len(devices)} active Wi-Fi devices and {ble_count} BLE beacons to presence server...")
+    payload = {"devices": devices}
+    if ble_devices:
+        payload["bleDevices"] = ble_devices
+    data = json.dumps(payload).encode("utf-8")
     
     req = urllib.request.Request(
         SERVER_URL, 
@@ -194,7 +260,7 @@ def report_presence(devices):
 
 if __name__ == "__main__":
     print("==================================================")
-    print("   Autonomous Multi-Room Presence Agent (Wi-Fi)   ")
+    print("   Autonomous Multi-Room Presence Agent (Wi-Fi+BLE) ")
     print("==================================================")
     print(f"Local Server URL:   {SERVER_URL}")
     print(f"Auto-Discovery:     {'ENABLED (Kernel routes + Server APs)' if AUTO_DISCOVER_SUBNETS else 'DISABLED'}")
@@ -203,8 +269,9 @@ if __name__ == "__main__":
     
     while True:
         try:
-            active_devices = scan_network()
-            report_presence(active_devices)
+            active_wifi = scan_network()
+            active_ble = scan_ble(duration_sec=3)
+            report_presence(active_wifi, active_ble)
         except KeyboardInterrupt:
             print("\\nExiting presence agent...")
             break
@@ -670,48 +737,51 @@ sudo systemctl status lecturedash.service
 
       {/* Toggle Agent Tabs */}
       <div className="space-y-4">
-        <div className="flex border-b border-slate-200 pb-0.5 space-x-3 overflow-x-auto scrollbar-none">
-          <button
-            onClick={() => setActiveGuideTab('oneclick')}
-            className={`pb-2.5 text-xs font-bold transition-all relative cursor-pointer shrink-0 flex items-center space-x-1.5 ${
-              activeGuideTab === 'oneclick' ? 'text-indigo-600 border-b-2 border-indigo-600' : 'text-slate-400 hover:text-slate-600'
-            }`}
-          >
-            <Zap className="w-3.5 h-3.5" />
-            <span>⚡ One-Click Installer & Updater</span>
-          </button>
-          <button
-            onClick={() => setActiveGuideTab('wifi')}
-            className={`pb-2.5 text-xs font-bold transition-all relative cursor-pointer shrink-0 ${
-              activeGuideTab === 'wifi' ? 'text-slate-900 border-b-2 border-slate-900' : 'text-slate-400 hover:text-slate-600'
-            }`}
-          >
-            2. Wi-Fi MAC Sweeper Agent
-          </button>
-          <button
-            onClick={() => setActiveGuideTab('rfid')}
-            className={`pb-2.5 text-xs font-bold transition-all relative cursor-pointer shrink-0 ${
-              activeGuideTab === 'rfid' ? 'text-slate-900 border-b-2 border-slate-900' : 'text-slate-400 hover:text-slate-600'
-            }`}
-          >
-            3. MFRC522 (RFID) Reader
-          </button>
-          <button
-            onClick={() => setActiveGuideTab('pn532')}
-            className={`pb-2.5 text-xs font-bold transition-all relative cursor-pointer shrink-0 ${
-              activeGuideTab === 'pn532' ? 'text-slate-900 border-b-2 border-slate-900' : 'text-slate-400 hover:text-slate-600'
-            }`}
-          >
-            4. PN532 (NFC v3 Red) Reader
-          </button>
-          <button
-            onClick={() => setActiveGuideTab('autostart')}
-            className={`pb-2.5 text-xs font-bold transition-all relative cursor-pointer shrink-0 ${
-              activeGuideTab === 'autostart' ? 'text-slate-900 border-b-2 border-slate-900' : 'text-slate-400 hover:text-slate-600'
-            }`}
-          >
-            5. Autostart & Keep-Alive (systemd)
-          </button>
+        {/* Sticky Responsive Segmented Navigation Bar */}
+        <div className="sticky top-16 z-30 py-2 -mx-1 sm:-mx-2 px-1 sm:px-2 bg-slate-100/90 backdrop-blur-md">
+          <div className="bg-white/95 p-1.5 rounded-2xl border border-slate-200/80 shadow-xs">
+            <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-1.5">
+              {[
+                { id: 'oneclick', step: '01', title: 'One-Click Installer', icon: Zap, badge: 'Smart' },
+                { id: 'wifi', step: '02', title: 'Wi-Fi MAC Sweeper', icon: Wifi, badge: 'Scanner' },
+                { id: 'rfid', step: '03', title: 'MFRC522 RFID', icon: CreditCard, badge: 'SPI' },
+                { id: 'pn532', step: '04', title: 'PN532 NFC Reader', icon: Cpu, badge: 'I2C' },
+                { id: 'autostart', step: '05', title: 'Autostart Daemon', icon: RefreshCw, badge: 'Systemd' },
+              ].map((tab) => {
+                const active = activeGuideTab === tab.id;
+                const Icon = tab.icon;
+                return (
+                  <button
+                    key={tab.id}
+                    type="button"
+                    onClick={() => setActiveGuideTab(tab.id as any)}
+                    className={`min-h-[50px] p-2.5 rounded-xl text-left transition-all duration-200 cursor-pointer flex flex-col justify-between relative select-none ${
+                      active
+                        ? 'bg-indigo-600 text-white shadow-sm ring-2 ring-indigo-600/20'
+                        : 'bg-slate-50/80 hover:bg-slate-100 text-slate-700 hover:text-slate-900 border border-slate-200/50'
+                    }`}
+                  >
+                    <div className="flex items-center justify-between gap-1 mb-1">
+                      <div className="flex items-center space-x-1.5">
+                        <Icon className={`w-3.5 h-3.5 ${active ? 'text-indigo-200' : 'text-slate-400'}`} />
+                        <span className={`text-[10px] font-mono font-bold uppercase tracking-wider ${active ? 'text-indigo-200' : 'text-slate-400'}`}>
+                          {tab.step}
+                        </span>
+                      </div>
+                      <span className={`text-[9px] font-bold px-1.5 py-0.5 rounded-md uppercase tracking-wider ${
+                        active ? 'bg-indigo-700/80 text-indigo-100' : 'bg-slate-200/60 text-slate-500'
+                      }`}>
+                        {tab.badge}
+                      </span>
+                    </div>
+                    <span className={`text-xs font-bold truncate block ${active ? 'text-white' : 'text-slate-800'}`}>
+                      {tab.title}
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
         </div>
 
         {activeGuideTab === 'oneclick' && (
@@ -986,13 +1056,44 @@ sudo systemctl status lecturedash.service
             </div>
 
             <div className="text-xs text-slate-500 space-y-2">
-              <p className="font-bold text-slate-800">2. Deploy the network script:</p>
+              <div className="flex items-center justify-between">
+                <p className="font-bold text-slate-800">2. Deploy the network script (<code className="font-mono text-indigo-600">presence_agent.py</code>):</p>
+                <span className="text-[10px] text-slate-400 font-mono hidden sm:inline">Autonomous ARP Sweep &amp; Hops</span>
+              </div>
               <ul className="list-decimal pl-5 space-y-1.5 text-slate-500 leading-relaxed">
                 <li>On the Raspberry Pi, create a new file: <code className="bg-slate-100 px-1.5 py-0.5 rounded font-mono text-slate-800">nano presence_agent.py</code></li>
-                <li>Paste the copied script code into the file and save (Ctrl+O, Enter, Ctrl+X).</li>
-                <li>Edit the <code className="bg-slate-100 px-1.5 py-0.5 rounded font-mono text-slate-800 font-bold">SCAN_SUBNET</code> string parameter to match your LAN IP scope (e.g. <code className="font-bold text-slate-700">192.168.73.0/26</code>).</li>
+                <li>Paste the script below into the file and save (<kbd className="bg-slate-100 px-1 rounded font-mono">Ctrl+O</kbd>, <kbd className="bg-slate-100 px-1 rounded font-mono">Enter</kbd>, <kbd className="bg-slate-100 px-1 rounded font-mono">Ctrl+X</kbd>).</li>
                 <li>Launch the agent: <code className="bg-slate-100 px-1.5 py-0.5 rounded font-mono text-slate-850">python3 presence_agent.py</code></li>
               </ul>
+
+              {/* Scrollable Python Script Preview Box */}
+              <div className="bg-slate-950 text-slate-300 font-mono rounded-2xl relative border border-slate-700/60 shadow-sm overflow-hidden mt-3">
+                <div className="flex items-center justify-between px-4 py-2.5 bg-slate-900 border-b border-slate-800 text-xs">
+                  <span className="text-indigo-400 font-bold flex items-center gap-1.5 font-mono">
+                    <Terminal className="w-3.5 h-3.5 text-indigo-400" />
+                    presence_agent.py
+                  </span>
+                  <button
+                    onClick={() => handleCopy(pythonScript, setCopiedPython)}
+                    className="flex items-center space-x-1 px-3 py-1 bg-indigo-600 hover:bg-indigo-500 text-white font-bold rounded-xl text-xs transition cursor-pointer shadow-xs"
+                  >
+                    {copiedPython ? (
+                      <>
+                        <Check className="w-3 h-3 text-white" />
+                        <span>Copied!</span>
+                      </>
+                    ) : (
+                      <>
+                        <Copy className="w-3 h-3" />
+                        <span>Copy Script</span>
+                      </>
+                    )}
+                  </button>
+                </div>
+                <div className="p-4 max-h-[340px] overflow-y-auto scrollbar-thin scrollbar-thumb-slate-700 scrollbar-track-slate-950 text-[11px] leading-relaxed">
+                  <pre className="whitespace-pre">{pythonScript}</pre>
+                </div>
+              </div>
             </div>
 
             <div className="p-4 bg-slate-50 border border-slate-200 rounded-2xl space-y-2 text-xs">
@@ -1036,13 +1137,16 @@ sudo systemctl status lecturedash.service
               </button>
             </div>
 
-            {/* Hardware Pin Hookups Grid */}
+            {/* Hardware Pin Hookups Grid - Wrapped in Scrollable Box */}
             <div className="text-xs text-slate-500 space-y-2">
-              <p className="font-bold text-slate-800">1. Wire the MFRC522 RC522 Reader to the Raspberry Pi GPIO pins:</p>
-              <div className="border border-slate-200 rounded-2xl overflow-hidden bg-white shadow-3xs">
+              <div className="flex items-center justify-between">
+                <p className="font-bold text-slate-800">1. Wire the MFRC522 RC522 Reader to the Raspberry Pi GPIO pins:</p>
+                <span className="text-[10px] text-slate-400 font-mono">Scroll table to view all pins</span>
+              </div>
+              <div className="border border-slate-200 rounded-2xl overflow-x-auto max-h-[300px] overflow-y-auto scrollbar-thin bg-white shadow-3xs">
                 <table className="w-full text-left text-[11px] border-collapse">
-                  <thead>
-                    <tr className="bg-slate-50 border-b border-slate-200 text-slate-500 font-mono font-bold uppercase">
+                  <thead className="sticky top-0 z-10">
+                    <tr className="bg-slate-100 border-b border-slate-200 text-slate-600 font-mono font-bold uppercase">
                       <th className="py-2.5 px-4">RC522 Pin Name</th>
                       <th className="py-2.5 px-4">RPi GPIO Number</th>
                       <th className="py-2.5 px-4">Physical Board Pin Number</th>
@@ -1131,13 +1235,42 @@ sudo systemctl status lecturedash.service
             </div>
 
             <div className="text-xs text-slate-500 space-y-2">
-              <p className="font-bold text-slate-800">3. Create and launch the RFID daemon:</p>
+              <p className="font-bold text-slate-800">3. Create and launch the RFID daemon (<code className="font-mono text-indigo-600">rfid_agent.py</code>):</p>
               <ul className="list-decimal pl-5 space-y-1.5 text-slate-500 leading-relaxed">
                 <li>Create file: <code className="bg-slate-100 px-1.5 py-0.5 rounded font-mono text-slate-800">nano rfid_agent.py</code></li>
-                <li>Paste the RFID Python code block into the file and save changes (Ctrl+O, Enter, Ctrl+X).</li>
+                <li>Paste the script below into the file and save (<kbd className="bg-slate-100 px-1 rounded font-mono">Ctrl+O</kbd>, <kbd className="bg-slate-100 px-1 rounded font-mono">Enter</kbd>, <kbd className="bg-slate-100 px-1 rounded font-mono">Ctrl+X</kbd>).</li>
                 <li>Launch the listener: <code className="bg-slate-100 px-1.5 py-0.5 rounded font-mono text-slate-800 font-bold">python3 rfid_agent.py</code></li>
-                <li>To keep the scanner running in the background when the terminal session exits:</li>
               </ul>
+
+              {/* Scrollable RFID Script Preview Box */}
+              <div className="bg-slate-950 text-slate-300 font-mono rounded-2xl relative border border-slate-700/60 shadow-sm overflow-hidden mt-3">
+                <div className="flex items-center justify-between px-4 py-2.5 bg-slate-900 border-b border-slate-800 text-xs">
+                  <span className="text-indigo-400 font-bold flex items-center gap-1.5 font-mono">
+                    <CreditCard className="w-3.5 h-3.5 text-indigo-400" />
+                    rfid_agent.py
+                  </span>
+                  <button
+                    onClick={() => handleCopy(rfidScript, setCopiedRfid)}
+                    className="flex items-center space-x-1 px-3 py-1 bg-indigo-600 hover:bg-indigo-500 text-white font-bold rounded-xl text-xs transition cursor-pointer shadow-xs"
+                  >
+                    {copiedRfid ? (
+                      <>
+                        <Check className="w-3 h-3 text-white" />
+                        <span>Copied!</span>
+                      </>
+                    ) : (
+                      <>
+                        <Copy className="w-3 h-3" />
+                        <span>Copy Script</span>
+                      </>
+                    )}
+                  </button>
+                </div>
+                <div className="p-4 max-h-[340px] overflow-y-auto scrollbar-thin scrollbar-thumb-slate-700 scrollbar-track-slate-950 text-[11px] leading-relaxed">
+                  <pre className="whitespace-pre">{rfidScript}</pre>
+                </div>
+              </div>
+
               <code className="block bg-slate-50 p-2.5 rounded-xl font-mono text-[11px] text-slate-600 border border-slate-200 mt-2 shadow-3xs">
                 nohup python3 rfid_agent.py &gt; rfid_agent.log 2&gt;&amp;1 &amp;
               </code>
@@ -1171,9 +1304,12 @@ sudo systemctl status lecturedash.service
               </button>
             </div>
 
-            {/* Hardware Pin Hookups Grid for PN532 */}
+            {/* Hardware Pin Hookups Grid for PN532 - Wrapped in Scrollable Box */}
             <div className="text-xs text-slate-500 space-y-2">
-              <p className="font-bold text-slate-800">1. Wire the PN532 Red Board to your Raspberry Pi pins:</p>
+              <div className="flex items-center justify-between">
+                <p className="font-bold text-slate-800">1. Wire the PN532 Red Board to your Raspberry Pi pins:</p>
+                <span className="text-[10px] text-slate-400 font-mono">Scroll table to view all pins</span>
+              </div>
               
               <div className="p-4 bg-amber-50 border border-amber-200 rounded-2xl text-[11px] text-slate-700 leading-relaxed space-y-1">
                 <div className="flex items-center space-x-2 text-amber-950 font-bold mb-1">
@@ -1190,10 +1326,10 @@ sudo systemctl status lecturedash.service
                 </div>
               </div>
 
-              <div className="border border-slate-200 rounded-2xl overflow-hidden bg-white shadow-3xs">
+              <div className="border border-slate-200 rounded-2xl overflow-x-auto max-h-[300px] overflow-y-auto scrollbar-thin bg-white shadow-3xs">
                 <table className="w-full text-left text-[11px] border-collapse">
-                  <thead>
-                    <tr className="bg-slate-50 border-b border-slate-200 text-slate-500 font-mono font-bold uppercase">
+                  <thead className="sticky top-0 z-10">
+                    <tr className="bg-slate-100 border-b border-slate-200 text-slate-600 font-mono font-bold uppercase">
                       <th className="py-2.5 px-4">PN532 Pin Name</th>
                       <th className="py-2.5 px-4">RPi GPIO / Bus Pin</th>
                       <th className="py-2.5 px-4">Physical Board Pin Number</th>
@@ -1258,14 +1394,42 @@ sudo systemctl status lecturedash.service
             </div>
 
             <div className="text-xs text-slate-500 space-y-2">
-              <p className="font-bold text-slate-800">3. Create and launch the PN532 NFC daemon:</p>
+              <p className="font-bold text-slate-800">3. Create and launch the PN532 NFC daemon (<code className="font-mono text-indigo-600">pn532_agent.py</code>):</p>
               <ul className="list-decimal pl-5 space-y-1.5 text-slate-500 leading-relaxed">
                 <li>On the Raspberry Pi, create a new file: <code className="bg-slate-100 px-1.5 py-0.5 rounded font-mono text-slate-800">nano pn532_agent.py</code></li>
-                <li>Paste the copied PN532 Python script into the file and save changes (Ctrl+O, Enter, Ctrl+X).</li>
+                <li>Paste the script below into the file and save (<kbd className="bg-slate-100 px-1 rounded font-mono">Ctrl+O</kbd>, <kbd className="bg-slate-100 px-1 rounded font-mono">Enter</kbd>, <kbd className="bg-slate-100 px-1 rounded font-mono">Ctrl+X</kbd>).</li>
                 <li>Launch the listener manually first to test: <code className="bg-slate-100 px-1.5 py-0.5 rounded font-mono text-slate-800 font-bold">python3 pn532_agent.py</code></li>
-                <li>Verify that it detects the firmware version and prints "Ready!". Tap a card to verify it scans correctly.</li>
-                <li>Once verified, you can run it continuously in the background:</li>
               </ul>
+
+              {/* Scrollable PN532 Script Preview Box */}
+              <div className="bg-slate-950 text-slate-300 font-mono rounded-2xl relative border border-slate-700/60 shadow-sm overflow-hidden mt-3">
+                <div className="flex items-center justify-between px-4 py-2.5 bg-slate-900 border-b border-slate-800 text-xs">
+                  <span className="text-indigo-400 font-bold flex items-center gap-1.5 font-mono">
+                    <Cpu className="w-3.5 h-3.5 text-indigo-400" />
+                    pn532_agent.py
+                  </span>
+                  <button
+                    onClick={() => handleCopy(pn532Script, setCopiedPn532)}
+                    className="flex items-center space-x-1 px-3 py-1 bg-indigo-600 hover:bg-indigo-500 text-white font-bold rounded-xl text-xs transition cursor-pointer shadow-xs"
+                  >
+                    {copiedPn532 ? (
+                      <>
+                        <Check className="w-3 h-3 text-white" />
+                        <span>Copied!</span>
+                      </>
+                    ) : (
+                      <>
+                        <Copy className="w-3 h-3" />
+                        <span>Copy Script</span>
+                      </>
+                    )}
+                  </button>
+                </div>
+                <div className="p-4 max-h-[340px] overflow-y-auto scrollbar-thin scrollbar-thumb-slate-700 scrollbar-track-slate-950 text-[11px] leading-relaxed">
+                  <pre className="whitespace-pre">{pn532Script}</pre>
+                </div>
+              </div>
+
               <code className="block bg-slate-50 p-2.5 rounded-xl font-mono text-[11px] text-slate-600 border border-slate-200 mt-2 shadow-3xs">
                 nohup python3 pn532_agent.py &gt; pn532_agent.log 2&gt;&amp;1 &amp;
               </code>
@@ -1305,10 +1469,11 @@ sudo systemctl status lecturedash.service
               </p>
             </div>
 
-            <div className="bg-slate-900 text-slate-300 font-mono p-4 rounded-2xl relative border border-slate-200 shadow-sm overflow-x-auto text-[11px] leading-relaxed">
+            {/* Scrollable systemd Script Preview Box */}
+            <div className="bg-slate-900 text-slate-300 font-mono p-4 rounded-2xl relative border border-slate-200 shadow-sm overflow-x-auto max-h-[380px] overflow-y-auto scrollbar-thin scrollbar-thumb-slate-700 scrollbar-track-slate-900 text-[11px] leading-relaxed">
               <button
                 onClick={() => handleCopy(autostartScript, setCopiedAutostart)}
-                className="absolute top-3 right-3 p-1.5 bg-slate-800 hover:bg-slate-700 rounded-lg text-slate-400 hover:text-white transition-colors cursor-pointer"
+                className="sticky top-0 float-right p-1.5 bg-slate-800 hover:bg-slate-700 rounded-lg text-slate-400 hover:text-white transition-colors cursor-pointer z-10"
                 title="Copy Commands"
               >
                 {copiedAutostart ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
@@ -1322,7 +1487,7 @@ sudo systemctl status lecturedash.service
                 Useful Management Commands:
               </h4>
               <ul className="list-disc pl-5 space-y-1 text-slate-700 font-mono text-[11px]">
-                <li><code className="font-bold text-indigo-900">sudo systemctl status lecturedash</code> (Check web server status & logs)</li>
+                <li><code className="font-bold text-indigo-900">sudo systemctl status lecturedash</code> (Check web server status &amp; logs)</li>
                 <li><code className="font-bold text-indigo-900">sudo systemctl restart presence-agent</code> (Restart Wi-Fi scanner agent)</li>
                 <li><code className="font-bold text-indigo-900">sudo journalctl -u lecturedash -f</code> (Live tail logs for Node.js web server)</li>
               </ul>
@@ -1331,7 +1496,7 @@ sudo systemctl status lecturedash.service
             <div className="p-4 bg-amber-50 border border-amber-200 rounded-2xl space-y-2 text-xs text-amber-900">
               <h4 className="font-bold flex items-center text-amber-950">
                 <AlertTriangle className="w-4 h-4 mr-2 text-amber-600" />
-                Fixing Exit Code 217/USER & 502 Bad Gateway:
+                Fixing Exit Code 217/USER &amp; 502 Bad Gateway:
               </h4>
               <p className="leading-relaxed">
                 <strong>1. Why code=exited, status=217/USER occurs:</strong> systemd failed because <code className="font-mono bg-amber-100 px-1 py-0.5 rounded">User=pi</code> does not exist on your system (e.g., if your user is <code className="font-mono bg-amber-100 px-1 py-0.5 rounded">admin</code>, <code className="font-mono bg-amber-100 px-1 py-0.5 rounded">ubuntu</code>, or another name).
@@ -1343,8 +1508,8 @@ sudo systemctl status lecturedash.service
                 <strong>2. Why Nginx returns 502 Bad Gateway:</strong> Nginx is looking for your web app on port 3000, but because the service crashed, port 3000 is inactive. As soon as <code className="font-mono bg-amber-100 px-1 py-0.5 rounded">lecturedash</code> successfully starts, Nginx 502 will disappear automatically.
               </p>
               <p className="leading-relaxed font-mono text-[11px] bg-amber-100/70 p-2 rounded-xl mt-1">
-                cd /home/$USER/lecturerpresence && npm run build<br />
-                sudo systemctl daemon-reload && sudo systemctl restart lecturedash
+                cd /home/$USER/lecturerpresence &amp;&amp; npm run build<br />
+                sudo systemctl daemon-reload &amp;&amp; sudo systemctl restart lecturedash
               </p>
             </div>
           </div>

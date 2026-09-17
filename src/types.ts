@@ -11,7 +11,7 @@ export interface TracerouteHop {
 export interface NetworkPresenceInfo {
   ip?: string;
   mac?: string;
-  hops: number; // 1 = Direct (Lecturer Room AP), 2 = 1 router hop (Staff Room AP), 3+ = Remote
+  hops: number; // 0 = Offline/Disconnected, 1 = Direct (Lecturer Room AP), 2 = 1 router hop (Staff Room AP), 3+ = Remote
   latencyMs: number;
   detectedZone: string; // e.g. "Lecturer Room AP (Direct)", "Staff Room AP (Routed)", "Corridor AP"
   zoneType: 'lecturer_room' | 'staff_room' | 'adjacent' | 'remote';
@@ -19,6 +19,10 @@ export interface NetworkPresenceInfo {
   traceroutePath: TracerouteHop[];
   lastTraced: number;
   explanation?: string;
+  isOnline?: boolean;
+  subnetCidr?: string;
+  detectionMethod?: 'wifi' | 'ble' | 'rfid' | 'manual';
+  rssi?: number; // Signal strength in dBm for BLE/Wi-Fi
 }
 
 export interface SubnetZoneRule {
@@ -39,15 +43,18 @@ export interface Lecturer {
   name: string;
   macAddress: string; // Primary MAC address (e.g. 5GHz Wi-Fi)
   secondaryMacAddress?: string; // Secondary MAC address (e.g. 2.4GHz Wi-Fi)
+  bleBeaconMac?: string; // Optional BLE Badge / Smartwatch / iBeacon MAC (zero pairing, 0 battery drain passive RF)
   ipAddress?: string; // Optional static or dynamic IP address
   rfidUid?: string; // Optional RFID Card UID for physical reader/tag check-ins (e.g. "8A2BC34D")
+  rfidOverrideUntil?: number; // Temporary immunity timestamp after physical RFID tap (prevents Wi-Fi sleep from flipping to Away)
   pin: string; // 4-digit PIN for quick check-in / manual status update
   profilePhotoUrl: string; // Base64 image data or external image URL
   awayPhotoUrl: string; // Base64 image data or external image URL (used when status is 'Present but Away')
   status: 'Available' | 'Away' | 'Meeting' | 'Class' | 'Out of Office';
   customMessage: string; // Optional custom status message (e.g. "In Class A until 10:00")
   isPresentToday: boolean; // Has been present at least once today
-  isDeviceDetected: boolean; // Currently connected to Wi-Fi
+  isDeviceDetected: boolean; // Currently connected to Wi-Fi or detected via BLE
+  detectionMethod?: 'wifi' | 'ble' | 'rfid' | 'manual';
   lastSeen: number; // Timestamp (ms) when device was last active or manual status changed
   firstSeenToday?: number; // Timestamp (ms) when device was first auto-detected today
   networkInfo?: NetworkPresenceInfo; // Real-time traceroute and hop presence info
@@ -65,7 +72,9 @@ export interface PresenceLog {
 export interface SystemConfig {
   adminPasswordHash: string; // Simple hashed admin password
   lastResetDate: string; // 'YYYY-MM-DD' - used to automatically reset 'isPresentToday' on new day
-  routerIp?: string; // Lecturer room router IP (e.g. 192.168.1.1)
+  routerIp?: string; // Lecturer room router IP (e.g. 192.168.73.1)
+  subnetMask?: string; // e.g. "255.255.255.192"
+  subnetCidrBits?: number; // e.g. 26
   subnetZoneRules?: SubnetZoneRule[];
   autoDiscoverSubnets?: boolean; // When true, unlisted room subnets & APs are discovered and registered automatically
 }

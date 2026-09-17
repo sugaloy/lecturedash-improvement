@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { Lecturer, SubnetZoneRule, TracerouteHop, NetworkPresenceInfo } from '../types';
 import { 
-  Route, Wifi, Server, Smartphone, Activity, HelpCircle, 
+  Route, Wifi, WifiOff, Server, Smartphone, Activity, HelpCircle, 
   RefreshCw, CheckCircle2, AlertTriangle, ArrowRight, Settings, 
   MapPin, Shield, Radio, Search, Plus, Trash2, Check,
   Sparkles, Edit2, Play, Building2, X, Lock
@@ -137,7 +137,11 @@ export const NetworkDiagnosticsView: React.FC<NetworkDiagnosticsViewProps> = ({
         </div>
 
         {/* Top Right Quick Stats */}
-        <div className="mt-6 pt-6 border-t border-slate-800 grid grid-cols-2 sm:grid-cols-4 gap-4">
+        <div className="mt-6 pt-6 border-t border-slate-800 grid grid-cols-2 sm:grid-cols-5 gap-3">
+          <div className="bg-slate-800/60 backdrop-blur-xs p-3 rounded-2xl border border-slate-700/60">
+            <span className="text-[10px] font-mono uppercase tracking-wider text-slate-400 block">Subnet Mask</span>
+            <span className="text-xs font-mono font-bold text-cyan-400 mt-0.5 block">255.255.255.192 (/26)</span>
+          </div>
           <div className="bg-slate-800/60 backdrop-blur-xs p-3 rounded-2xl border border-slate-700/60">
             <span className="text-[10px] font-mono uppercase tracking-wider text-slate-400 block">Active Router</span>
             <span className="text-sm font-mono font-bold text-indigo-300 mt-0.5 block">{routerIp}</span>
@@ -148,7 +152,7 @@ export const NetworkDiagnosticsView: React.FC<NetworkDiagnosticsViewProps> = ({
           </div>
           <div className="bg-slate-800/60 backdrop-blur-xs p-3 rounded-2xl border border-slate-700/60">
             <span className="text-[10px] font-mono uppercase tracking-wider text-slate-400 block">Multi-Room Hops</span>
-            <span className="text-sm font-bold text-amber-400 mt-0.5 block">2-3 Hops (Classrooms)</span>
+            <span className="text-sm font-bold text-amber-400 mt-0.5 block">2-3 Hops (Staff/Lab)</span>
           </div>
           <div className="bg-slate-800/60 backdrop-blur-xs p-3 rounded-2xl border border-slate-700/60">
             <span className="text-[10px] font-mono uppercase tracking-wider text-slate-400 block">Subnet Discovery</span>
@@ -258,11 +262,15 @@ export const NetworkDiagnosticsView: React.FC<NetworkDiagnosticsViewProps> = ({
                   onChange={(e) => setSelectedLecturerId(e.target.value)}
                   className="w-full px-3.5 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-xs font-semibold text-slate-800 focus:ring-2 focus:ring-indigo-500 focus:outline-hidden"
                 >
-                  {lecturers.map((l) => (
-                    <option key={l.id} value={l.id}>
-                      {l.name} — {l.ipAddress || '192.168.1.x'} ({l.macAddress || 'No MAC'}) [{l.networkInfo?.hops || 1} Hop]
-                    </option>
-                  ))}
+                  {lecturers.map((l) => {
+                    const isOnline = !!l.isPresentToday && !!l.isDeviceDetected && l.status !== 'Out of Office';
+                    const hopText = isOnline ? `${l.networkInfo?.hops || 1} Hop` : 'Offline';
+                    return (
+                      <option key={l.id} value={l.id}>
+                        {l.name} — {l.ipAddress || 'No IP'} ({l.macAddress || 'No MAC'}) [{hopText}]
+                      </option>
+                    );
+                  })}
                 </select>
               </div>
             ) : (
@@ -434,30 +442,38 @@ export const NetworkDiagnosticsView: React.FC<NetworkDiagnosticsViewProps> = ({
                 </thead>
                 <tbody className="divide-y divide-slate-100">
                   {lecturers.map((lect) => {
-                    const hops = lect.networkInfo?.hops || 1;
+                    const isOnline = !!lect.isPresentToday && !!lect.isDeviceDetected && lect.status !== 'Out of Office';
+                    const hops = isOnline ? (lect.networkInfo?.hops || 1) : 0;
                     const isDirect = hops === 1;
                     return (
                       <tr key={lect.id} className="hover:bg-slate-50/80 transition-colors">
                         <td className="py-2.5 px-3 font-bold text-slate-900">
                           <div className="flex items-center space-x-2">
-                            <span className={`w-2 h-2 rounded-full ${lect.isPresentToday ? 'bg-emerald-500' : 'bg-slate-300'}`} />
+                            <span className={`w-2 h-2 rounded-full ${isOnline ? 'bg-emerald-500' : 'bg-slate-300'}`} />
                             <span>{lect.name}</span>
                           </div>
                         </td>
                         <td className="py-2.5 px-3 font-mono text-slate-600">
-                          {lect.ipAddress || '192.168.1.x'}
+                          {lect.ipAddress || '—'}
                         </td>
                         <td className="py-2.5 px-3">
-                          <span className={`inline-flex items-center space-x-1 px-2 py-0.5 rounded-full font-bold text-[10px] ${
-                            isDirect ? 'bg-emerald-100 text-emerald-800' : 'bg-amber-100 text-amber-800'
-                          }`}>
-                            <Route className="w-2.5 h-2.5" />
-                            <span>{hops} {hops === 1 ? 'Hop' : 'Hops'}</span>
-                          </span>
+                          {isOnline ? (
+                            <span className={`inline-flex items-center space-x-1 px-2 py-0.5 rounded-full font-bold text-[10px] ${
+                              isDirect ? 'bg-emerald-100 text-emerald-800' : 'bg-amber-100 text-amber-800'
+                            }`}>
+                              <Route className="w-2.5 h-2.5" />
+                              <span>{hops} {hops === 1 ? 'Hop' : 'Hops'}</span>
+                            </span>
+                          ) : (
+                            <span className="inline-flex items-center space-x-1 px-2 py-0.5 rounded-full font-bold text-[10px] bg-slate-100 text-slate-500">
+                              <WifiOff className="w-2.5 h-2.5" />
+                              <span>Offline</span>
+                            </span>
+                          )}
                         </td>
                         <td className="py-2.5 px-3 text-slate-700">
-                          <span className="truncate block max-w-[160px]" title={lect.networkInfo?.detectedZone}>
-                            {lect.networkInfo?.detectedZone || 'Lecturer Room (Direct)'}
+                          <span className="truncate block max-w-[160px]" title={isOnline ? lect.networkInfo?.detectedZone : 'Not Connected'}>
+                            {isOnline ? (lect.networkInfo?.detectedZone || 'Lecturer Room (Direct)') : '— (Disconnected)'}
                           </span>
                         </td>
                         <td className="py-2.5 px-3 text-right">

@@ -3,7 +3,7 @@ import { Lecturer, PresenceLog, SubnetZoneRule } from '../types';
 import { 
   Plus, Edit, Trash2, RefreshCw, LogIn, Lock, CheckCircle2, 
   AlertCircle, Upload, User, FileText, X, Cpu, CreditCard, Download, Database, Loader2, Tv, Sliders,
-  Route, Server, Wifi, Sparkles, Check, Edit2, Radio
+  Route, Server, Wifi, Sparkles, Check, Edit2, Radio, Activity, Bluetooth
 } from 'lucide-react';
 
 interface AdminPanelProps {
@@ -19,7 +19,8 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ lecturers: propLecturers
   const [isSubmitting, setIsSubmitting] = useState(false);
 
   // Network Subnet Rules State
-  const [networkRouterIp, setNetworkRouterIp] = useState('192.168.1.1');
+  const [networkRouterIp, setNetworkRouterIp] = useState('192.168.73.1');
+  const [networkSubnetMask, setNetworkSubnetMask] = useState('255.255.255.192');
   const [networkSubnetRules, setNetworkSubnetRules] = useState<SubnetZoneRule[]>([]);
   const [networkAutoDiscover, setNetworkAutoDiscover] = useState(true);
   const [isLoadingNetworkConfig, setIsLoadingNetworkConfig] = useState(false);
@@ -98,6 +99,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ lecturers: propLecturers
   const [formName, setFormName] = useState('');
   const [formMac, setFormMac] = useState('');
   const [formSecondaryMac, setFormSecondaryMac] = useState('');
+  const [formBleMac, setFormBleMac] = useState('');
   const [formIp, setFormIp] = useState('');
   const [formPin, setFormPin] = useState('');
   const [formRfid, setFormRfid] = useState('');
@@ -153,10 +155,10 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ lecturers: propLecturers
   };
 
   // Active Scanned Devices State
-  const [scannedDevices, setScannedDevices] = useState<Array<{ mac: string; ip: string; timestamp: number; isAssigned: boolean; assignedTo: string | null }>>([]);
+  const [scannedDevices, setScannedDevices] = useState<Array<{ mac: string; ip: string; timestamp: number; isAssigned: boolean; assignedTo: string | null; deviceType?: 'wifi' | 'ble'; rssi?: number }>>([]);
   const [isScanningDevices, setIsScanningDevices] = useState(false);
   const [showScanPicker, setShowScanPicker] = useState(false);
-  const [scanTargetField, setScanTargetField] = useState<'primary' | 'secondary' | null>(null);
+  const [scanTargetField, setScanTargetField] = useState<'primary' | 'secondary' | 'ble' | null>(null);
 
   // Local storage for admin token
   useEffect(() => {
@@ -222,7 +224,8 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ lecturers: propLecturers
       if (res.ok) {
         const data = await res.json();
         if (data.success) {
-          setNetworkRouterIp(data.routerIp || '192.168.1.1');
+          setNetworkRouterIp(data.routerIp || '192.168.73.1');
+          setNetworkSubnetMask(data.subnetMask || '255.255.255.192');
           setNetworkSubnetRules(data.subnetZoneRules || []);
           setNetworkAutoDiscover(data.autoDiscoverSubnets !== false);
         }
@@ -246,6 +249,8 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ lecturers: propLecturers
         },
         body: JSON.stringify({
           routerIp: networkRouterIp,
+          subnetMask: networkSubnetMask,
+          subnetCidrBits: 26,
           subnetZoneRules: networkSubnetRules,
           autoDiscoverSubnets: networkAutoDiscover
         })
@@ -475,6 +480,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ lecturers: propLecturers
     setFormName(lecturer.name);
     setFormMac(lecturer.macAddress);
     setFormSecondaryMac(lecturer.secondaryMacAddress || '');
+    setFormBleMac(lecturer.bleBeaconMac || '');
     setFormIp(lecturer.ipAddress || '');
     setFormPin(lecturer.pin);
     setFormRfid(lecturer.rfidUid || '');
@@ -493,6 +499,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ lecturers: propLecturers
     setFormName('');
     setFormMac('');
     setFormSecondaryMac('');
+    setFormBleMac('');
     setFormIp('');
     setFormPin('');
     setFormRfid('');
@@ -532,6 +539,14 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ lecturers: propLecturers
       }
     }
 
+    // Validate BLE Beacon MAC pattern if provided
+    let cleanBleMac = formBleMac.toLowerCase().trim();
+    if (cleanBleMac) {
+      if (!macRegex.test(cleanBleMac)) {
+        return setFormError('Invalid BLE Badge MAC address format. Example: aa:bb:cc:dd:ee:ff');
+      }
+    }
+
     setIsSubmitting(true);
     try {
       const lecturerId = editingLecturer ? editingLecturer.id : `lecturer_${Date.now()}`;
@@ -541,6 +556,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ lecturers: propLecturers
         name: formName.trim(),
         macAddress: cleanMac,
         secondaryMacAddress: cleanSecondaryMac || undefined,
+        bleBeaconMac: cleanBleMac || undefined,
         ipAddress: formIp.trim() || undefined,
         rfidUid: formRfid.trim() || undefined,
         pin: formPin.trim(),
@@ -963,7 +979,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ lecturers: propLecturers
                 {showScanPicker && (
                   <div className="mt-1 border border-indigo-200 rounded-xl bg-indigo-50/60 p-3 max-h-52 overflow-y-auto space-y-1 shadow-md">
                     <div className="flex items-center justify-between text-[10px] text-indigo-900 font-mono font-bold uppercase pb-1.5 border-b border-indigo-200 mb-1.5">
-                      <span>Select Device for {scanTargetField === 'secondary' ? '2.4GHz MAC' : '5GHz MAC'}</span>
+                      <span>Select Device for {scanTargetField === 'secondary' ? '2.4GHz MAC' : scanTargetField === 'ble' ? 'BLE Badge Beacon' : '5GHz MAC'}</span>
                       <button
                         type="button"
                         onClick={() => {
@@ -976,11 +992,11 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ lecturers: propLecturers
                       </button>
                     </div>
                     {isScanningDevices && scannedDevices.length === 0 ? (
-                      <p className="text-[10px] text-indigo-500 text-center py-2 animate-pulse font-mono">Scanning local subnet devices...</p>
+                      <p className="text-[10px] text-indigo-500 text-center py-2 animate-pulse font-mono">Scanning local devices...</p>
                     ) : scannedDevices.length === 0 ? (
                       <div className="text-center py-2 space-y-1">
                         <p className="text-[10px] text-slate-500">No active devices reported yet.</p>
-                        <p className="text-[9px] text-slate-400">Ensure scanner agent is reporting device pings.</p>
+                        <p className="text-[9px] text-slate-400">Ensure scanner agent is running.</p>
                       </div>
                     ) : (
                       scannedDevices.map((dev) => (
@@ -991,10 +1007,12 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ lecturers: propLecturers
                           onClick={() => {
                             if (scanTargetField === 'secondary') {
                               setFormSecondaryMac(dev.mac);
+                            } else if (scanTargetField === 'ble') {
+                              setFormBleMac(dev.mac);
                             } else {
                               setFormMac(dev.mac);
                             }
-                            if (dev.ip) setFormIp(dev.ip);
+                            if (dev.ip && scanTargetField !== 'ble') setFormIp(dev.ip);
                             setShowScanPicker(false);
                             setScanTargetField(null);
                           }}
@@ -1005,9 +1023,12 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ lecturers: propLecturers
                           }`}
                         >
                           <div className="flex flex-col">
-                            <span className="font-mono font-bold text-slate-800">{dev.mac}</span>
+                            <span className="font-mono font-bold text-slate-800 flex items-center space-x-1.5">
+                              {dev.deviceType === 'ble' && <Bluetooth className="w-3 h-3 text-blue-500 shrink-0" />}
+                              <span>{dev.mac}</span>
+                            </span>
                             <span className="text-[9px] text-slate-500 font-mono">
-                              IP: {dev.ip || 'Unknown'} • {Math.round((Date.now() - dev.timestamp) / 1000 / 60)}m ago
+                              {dev.deviceType === 'ble' ? `BLE Beacon (${dev.rssi || -65} dBm)` : `IP: ${dev.ip || 'Unknown'}`} • {Math.round((Date.now() - dev.timestamp) / 1000 / 60)}m ago
                             </span>
                           </div>
                           <span className={`text-[9px] font-bold px-1.5 py-0.5 rounded ${
@@ -1015,7 +1036,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ lecturers: propLecturers
                               ? 'bg-slate-200 text-slate-500'
                               : 'bg-indigo-100 text-indigo-800 border border-indigo-200'
                           }`}>
-                            {dev.isAssigned ? `Assigned (${dev.assignedTo})` : `Pick as ${scanTargetField === 'secondary' ? '2.4GHz' : '5GHz'}`}
+                            {dev.isAssigned ? `Assigned (${dev.assignedTo})` : `Pick as ${scanTargetField === 'secondary' ? '2.4GHz' : scanTargetField === 'ble' ? 'BLE Badge' : '5GHz'}`}
                           </span>
                         </button>
                       ))
@@ -1057,7 +1078,36 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ lecturers: propLecturers
                   />
                   <p className="text-[10px] text-slate-400 mt-1">Assign a physical card or keyfob (hex). Taps toggle presence.</p>
                 </div>
+                <div>
+                  <div className="flex items-center justify-between mb-1">
+                    <label className="text-xs font-bold text-slate-500 flex items-center space-x-1">
+                      <Bluetooth className="w-3.5 h-3.5 text-blue-500" />
+                      <span>BLE Beacon Badge / Smartwatch MAC (Optional)</span>
+                    </label>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        fetchScannedDevices();
+                        setShowScanPicker(true);
+                        setScanTargetField('ble');
+                      }}
+                      className="text-[10px] font-bold text-blue-600 hover:text-blue-800 flex items-center gap-1 cursor-pointer transition-colors"
+                    >
+                      <RefreshCw className={`w-3 h-3 ${isScanningDevices && scanTargetField === 'ble' ? 'animate-spin' : ''}`} />
+                      <span>{showScanPicker && scanTargetField === 'ble' ? 'Close Scan' : 'Pick Nearby BLE'}</span>
+                    </button>
+                  </div>
+                  <input
+                    type="text"
+                    placeholder="e.g. 95:05:BB:2C:C4:B6 (passive BLE proximity)"
+                    value={formBleMac}
+                    onChange={(e) => setFormBleMac(e.target.value)}
+                    className="w-full bg-white rounded-xl border border-slate-200 px-3.5 py-2.5 text-xs text-slate-850 font-mono placeholder-slate-400 focus:outline-none focus:ring-1 focus:ring-slate-400"
+                  />
+                  <p className="text-[10px] text-slate-400 mt-1">Pure passive BLE RF beacon. 0 battery drain, no pairing needed. 100% accurate room proximity.</p>
+                </div>
               </div>
+
 
               {/* Middle Column: Profile Photo Dropzone */}
               <div>
@@ -1929,22 +1979,40 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ lecturers: propLecturers
             </div>
 
             {/* Gateway & Auto-Discovery Panel */}
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
               
               {/* Default Gateway Router IP */}
               <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-2xs space-y-2">
                 <label className="text-xs font-bold text-slate-800 flex items-center space-x-1.5">
                   <Server className="w-4 h-4 text-slate-500" />
-                  <span>Lecturer Room Router Gateway IP</span>
+                  <span>Router Gateway IP</span>
                 </label>
                 <p className="text-[11px] text-slate-500">
-                  The primary subnet gateway router. Devices on this subnet are considered directly present (1 hop).
+                  Primary subnet router gateway. Devices on this subnet are direct (1 hop).
                 </p>
                 <input
                   type="text"
                   value={networkRouterIp}
                   onChange={(e) => setNetworkRouterIp(e.target.value)}
-                  placeholder="e.g. 192.168.1.1"
+                  placeholder="e.g. 192.168.73.1"
+                  className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-mono font-bold text-slate-900 focus:bg-white focus:border-indigo-500 focus:outline-hidden"
+                />
+              </div>
+
+              {/* Network Subnet Mask */}
+              <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-2xs space-y-2">
+                <label className="text-xs font-bold text-slate-800 flex items-center space-x-1.5">
+                  <Activity className="w-4 h-4 text-cyan-600" />
+                  <span>Subnet Mask (/26 Architecture)</span>
+                </label>
+                <p className="text-[11px] text-slate-500">
+                  64 IPs per subnet block (.0, .64, .128, .192). Usable: 62 hosts.
+                </p>
+                <input
+                  type="text"
+                  value={networkSubnetMask}
+                  onChange={(e) => setNetworkSubnetMask(e.target.value)}
+                  placeholder="255.255.255.192"
                   className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-mono font-bold text-slate-900 focus:bg-white focus:border-indigo-500 focus:outline-hidden"
                 />
               </div>
@@ -2013,7 +2081,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ lecturers: propLecturers
               <div className="flex items-center justify-between">
                 <div className="flex items-center space-x-2">
                   <span className="text-xs font-bold text-slate-800">
-                    Subnet & Room Zone Rules ({networkSubnetRules.length})
+                    Subnet & Room Zone Rules ({(networkSubnetRules || []).length})
                   </span>
                   <span className="text-[10px] text-slate-400 font-mono">
                     Editable by Admin Only
@@ -2023,14 +2091,14 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ lecturers: propLecturers
                   type="button"
                   onClick={() => {
                     const newRule: SubnetZoneRule = {
-                      id: `rule_${Date.now()}`,
-                      subnetCidrOrPrefix: '192.168.3.',
-                      name: 'New Classroom AP',
+                      id: `rule_custom_${Date.now()}`,
+                      name: 'New Room / AP Zone',
+                      subnetCidrOrPrefix: '192.168.73.64/26',
                       expectedHops: 2,
-                      zoneType: 'adjacent',
-                      description: 'Classroom / Lab access point zone',
+                      zoneType: 'staff_room',
+                      description: 'Custom configured AP zone (255.255.255.192 /26)',
                     };
-                    setNetworkSubnetRules([...networkSubnetRules, newRule]);
+                    setNetworkSubnetRules([...(networkSubnetRules || []), newRule]);
                   }}
                   className="flex items-center space-x-1 px-3 py-1.5 bg-emerald-50 text-emerald-700 border border-emerald-200 hover:bg-emerald-100 rounded-xl text-xs font-bold transition-all cursor-pointer shadow-2xs"
                 >
@@ -2039,19 +2107,19 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ lecturers: propLecturers
                 </button>
               </div>
 
-              {networkSubnetRules.length === 0 ? (
+              {(!networkSubnetRules || networkSubnetRules.length === 0) ? (
                 <div className="bg-white p-8 rounded-xl border border-slate-200 text-center space-y-2">
                   <p className="text-xs text-slate-400 font-medium">No custom subnet rules configured.</p>
                   <p className="text-[11px] text-slate-400">Click "Add Room Rule" or run "Trigger Auto-Sweep" to auto-discover rooms.</p>
                 </div>
               ) : (
                 <div className="space-y-2.5">
-                  {networkSubnetRules.map((rule, idx) => (
-                    <div key={rule.id} className="bg-white p-4 rounded-xl border border-slate-200 shadow-2xs space-y-3">
+                  {(networkSubnetRules || []).map((rule, idx) => (
+                    <div key={rule.id || `rule_${idx}`} className="bg-white p-4 rounded-xl border border-slate-200 shadow-2xs space-y-3">
                       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-slate-100 pb-2.5">
                         <div className="flex items-center space-x-2">
                           <span className="text-xs font-mono font-bold text-slate-900 bg-slate-100 px-2.5 py-0.5 rounded-md border border-slate-200">
-                            {rule.subnetCidrOrPrefix}
+                            {rule.subnetCidrOrPrefix || 'Unknown Subnet'}
                           </span>
                           {rule.autoLearned && (
                             <span className="inline-flex items-center space-x-1 text-[10px] font-bold text-purple-700 bg-purple-100 px-2 py-0.5 rounded-md">
@@ -2060,9 +2128,9 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ lecturers: propLecturers
                             </span>
                           )}
                           <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${
-                            rule.expectedHops === 1 ? 'bg-emerald-100 text-emerald-800' : 'bg-amber-100 text-amber-800'
+                            (rule.expectedHops || 1) === 1 ? 'bg-emerald-100 text-emerald-800' : 'bg-amber-100 text-amber-800'
                           }`}>
-                            {rule.expectedHops} {rule.expectedHops === 1 ? 'Hop (Direct)' : 'Hops (Routed)'}
+                            {rule.expectedHops || 1} {(rule.expectedHops || 1) === 1 ? 'Hop (Direct)' : 'Hops (Routed)'}
                           </span>
                         </div>
 
@@ -2072,10 +2140,10 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ lecturers: propLecturers
                             onClick={() => {
                               triggerConfirm(
                                 'Delete Subnet Rule',
-                                `Are you sure you want to delete rule for "${rule.name}" (${rule.subnetCidrOrPrefix})?`,
+                                `Are you sure you want to delete rule for "${rule.name || 'Zone'}" (${rule.subnetCidrOrPrefix || ''})?`,
                                 () => {
-                                  setNetworkSubnetRules(networkSubnetRules.filter((_, i) => i !== idx));
-                                  showToast(`Removed rule for ${rule.name}`);
+                                  setNetworkSubnetRules((networkSubnetRules || []).filter((_, i) => i !== idx));
+                                  showToast(`Removed rule for ${rule.name || 'zone'}`);
                                 }
                               );
                             }}
@@ -2093,9 +2161,9 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ lecturers: propLecturers
                           <label className="text-[10px] font-bold text-slate-400 uppercase">Subnet Prefix / CIDR</label>
                           <input
                             type="text"
-                            value={rule.subnetCidrOrPrefix}
+                            value={rule.subnetCidrOrPrefix || ''}
                             onChange={(e) => {
-                              const copy = [...networkSubnetRules];
+                              const copy = [...(networkSubnetRules || [])];
                               copy[idx].subnetCidrOrPrefix = e.target.value;
                               setNetworkSubnetRules(copy);
                             }}
@@ -2108,9 +2176,9 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ lecturers: propLecturers
                           <label className="text-[10px] font-bold text-slate-400 uppercase">Room / Zone Name</label>
                           <input
                             type="text"
-                            value={rule.name}
+                            value={rule.name || ''}
                             onChange={(e) => {
-                              const copy = [...networkSubnetRules];
+                              const copy = [...(networkSubnetRules || [])];
                               copy[idx].name = e.target.value;
                               setNetworkSubnetRules(copy);
                             }}
@@ -2122,9 +2190,9 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ lecturers: propLecturers
                         <div className="space-y-1">
                           <label className="text-[10px] font-bold text-slate-400 uppercase">Expected Routing Hops</label>
                           <select
-                            value={rule.expectedHops}
+                            value={rule.expectedHops || 1}
                             onChange={(e) => {
-                              const copy = [...networkSubnetRules];
+                              const copy = [...(networkSubnetRules || [])];
                               copy[idx].expectedHops = parseInt(e.target.value, 10);
                               setNetworkSubnetRules(copy);
                             }}
@@ -2144,7 +2212,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ lecturers: propLecturers
                           type="text"
                           value={rule.description || ''}
                           onChange={(e) => {
-                            const copy = [...networkSubnetRules];
+                            const copy = [...(networkSubnetRules || [])];
                             copy[idx].description = e.target.value;
                             setNetworkSubnetRules(copy);
                           }}
@@ -2158,6 +2226,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ lecturers: propLecturers
               )}
             </div>
 
+
             {/* Save & Reset Actions Bar */}
             <div className="pt-3 border-t border-slate-200/80 flex flex-col sm:flex-row items-center justify-between gap-3">
               <button
@@ -2169,56 +2238,56 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ lecturers: propLecturers
                     () => {
                       const defaults: SubnetZoneRule[] = [
                         {
-                          id: "rule_lecturer_room",
+                          id: "rule_73_sub0_lecturer",
                           name: "Lecturer Room (Direct AP)",
-                          subnetCidrOrPrefix: "192.168.1.",
+                          subnetCidrOrPrefix: "192.168.73.0/26",
                           expectedHops: 1,
                           zoneType: "lecturer_room",
-                          description: "Direct department access point. Zero intermediate router hops.",
+                          description: "Direct department access point (192.168.73.0 - .63 /26). Zero intermediate router hops.",
                         },
                         {
-                          id: "rule_staff_room",
+                          id: "rule_73_sub1_staff",
                           name: "Staff Room Access Point",
-                          subnetCidrOrPrefix: "192.168.2.",
+                          subnetCidrOrPrefix: "192.168.73.64/26",
                           expectedHops: 2,
                           zoneType: "staff_room",
-                          description: "Adjacent department access point connected through floor router (1 hop).",
+                          description: "Staff Room AP across the corridor (192.168.73.64 - .127 /26). 2 hops via gateway.",
                         },
                         {
-                          id: "rule_classroom_301",
-                          name: "Classroom 301 / Lab AP",
-                          subnetCidrOrPrefix: "192.168.3.",
-                          expectedHops: 2,
+                          id: "rule_73_sub2_lab",
+                          name: "Department Hallway / Lab AP",
+                          subnetCidrOrPrefix: "192.168.73.128/26",
+                          expectedHops: 3,
                           zoneType: "adjacent",
-                          description: "Multimedia laboratory and classroom floor AP.",
+                          description: "Multimedia laboratory and classroom floor AP (192.168.73.128 - .191 /26).",
                         },
                         {
-                          id: "rule_classroom_302",
-                          name: "Classroom 302 AP",
-                          subnetCidrOrPrefix: "192.168.4.",
-                          expectedHops: 2,
-                          zoneType: "adjacent",
-                          description: "Standard classroom wing AP.",
-                        },
-                        {
-                          id: "rule_auditorium",
-                          name: "Auditorium / Hall AP",
-                          subnetCidrOrPrefix: "192.168.10.",
+                          id: "rule_73_sub3_guest",
+                          name: "Campus Guest / Extra VLAN",
+                          subnetCidrOrPrefix: "192.168.73.192/26",
                           expectedHops: 3,
                           zoneType: "remote",
-                          description: "Central campus auditorium / grand hall AP.",
+                          description: "Campus walkway and guest access point (192.168.73.192 - .255 /26).",
                         },
                         {
-                          id: "rule_corridor",
-                          name: "Corridor & Public Access Point",
-                          subnetCidrOrPrefix: "192.168.73.",
-                          expectedHops: 3,
-                          zoneType: "remote",
-                          description: "Campus walkway and corridor public access point.",
+                          id: "rule_1_sub0_lecturer",
+                          name: "Lecturer Room Router (192.168.1.0/26)",
+                          subnetCidrOrPrefix: "192.168.1.0/26",
+                          expectedHops: 1,
+                          zoneType: "lecturer_room",
+                          description: "Secondary router subnet 192.168.1.0/26.",
+                        },
+                        {
+                          id: "rule_1_sub1_staff",
+                          name: "Staff Room AP (192.168.1.64/26)",
+                          subnetCidrOrPrefix: "192.168.1.64/26",
+                          expectedHops: 2,
+                          zoneType: "staff_room",
+                          description: "Secondary staff room subnet 192.168.1.64/26.",
                         },
                       ];
                       setNetworkSubnetRules(defaults);
-                      showToast('Subnet rules restored to campus standard defaults. Click Save Changes to apply.');
+                      showToast('Subnet rules restored to /26 campus standard defaults. Click Save Changes to apply.');
                     }
                   );
                 }}

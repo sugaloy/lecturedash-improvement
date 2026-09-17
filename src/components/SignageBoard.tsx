@@ -40,15 +40,13 @@ const containerVariants = {
 const cardVariants = {
   hidden: {
     opacity: 0,
-    y: 26,
-    scale: 0.91,
-    filter: 'blur(6px)',
+    y: 16,
+    scale: 0.97,
   },
   show: {
     opacity: 1,
     y: 0,
     scale: 1,
-    filter: 'blur(0px)',
     transition: {
       type: 'spring',
       stiffness: 320,
@@ -58,11 +56,10 @@ const cardVariants = {
   },
   exit: {
     opacity: 0,
-    y: -18,
-    scale: 0.94,
-    filter: 'blur(4px)',
+    y: -14,
+    scale: 0.97,
     transition: {
-      duration: 0.18,
+      duration: 0.15,
       ease: 'easeIn',
     },
   },
@@ -70,7 +67,14 @@ const cardVariants = {
 
 export const SignageBoard: React.FC<SignageBoardProps> = ({ lecturers, onExit }) => {
   const [currentTime, setCurrentTime] = useState<Date>(new Date());
-  const [isMobileDisplay, setIsMobileDisplay] = useState(false);
+  const [isMobileDisplay, setIsMobileDisplay] = useState<boolean>(() => {
+    if (typeof window === 'undefined') return false;
+    const params = new URLSearchParams(window.location.search);
+    const hasMobileParam = params.get('mobile') === 'true';
+    const isSmall = window.innerWidth < 1024;
+    const isTouch = ('ontouchstart' in window) || (navigator.maxTouchPoints > 0);
+    return hasMobileParam || isSmall || (isTouch && window.innerWidth < 1280);
+  });
 
   // TV Signage Preferences (Admin Configurable)
   const [signageSettings, setSignageSettings] = useState<SignageSettings>({
@@ -111,15 +115,16 @@ export const SignageBoard: React.FC<SignageBoardProps> = ({ lecturers, onExit })
   // Responsive mobile screen check
   useEffect(() => {
     if (typeof window !== 'undefined') {
-      const params = new URLSearchParams(window.location.search);
-      const hasMobileParam = params.get('mobile') === 'true';
-      setIsMobileDisplay(hasMobileParam || window.innerWidth < 768);
-
-      const handleResize = () => {
-        setIsMobileDisplay(hasMobileParam || window.innerWidth < 768);
+      const checkMobile = () => {
+        const params = new URLSearchParams(window.location.search);
+        const hasMobileParam = params.get('mobile') === 'true';
+        const isSmall = window.innerWidth < 1024;
+        const isTouch = ('ontouchstart' in window) || (navigator.maxTouchPoints > 0);
+        setIsMobileDisplay(hasMobileParam || isSmall || (isTouch && window.innerWidth < 1280));
       };
-      window.addEventListener('resize', handleResize);
-      return () => window.removeEventListener('resize', handleResize);
+      checkMobile();
+      window.addEventListener('resize', checkMobile);
+      return () => window.removeEventListener('resize', checkMobile);
     }
   }, []);
   
@@ -195,7 +200,9 @@ export const SignageBoard: React.FC<SignageBoardProps> = ({ lecturers, onExit })
     macAddress: ''
   }));
 
-  const activePageSlots = [...pageLecturers, ...paddedSlots];
+  // On mobile screens: render all registered lecturers in a natural, smooth vertical scrolling feed
+  // On TV displays: paginate with padded placeholders to maintain a symmetrical grid layout
+  const activePageSlots = isMobileDisplay ? lecturers : [...pageLecturers, ...paddedSlots];
 
   // Calculate overall statistics
   const presentCount = lecturers.filter(l => l.isPresentToday && l.isDeviceDetected && l.status === 'Available').length;
@@ -311,8 +318,32 @@ export const SignageBoard: React.FC<SignageBoardProps> = ({ lecturers, onExit })
     }
   };
 
+  // Responsive Photo Size Generator: scales photo up on larger TV displays while keeping small screens intact (tuned ~15% more compact)
+  const getPhotoSizeClasses = () => {
+    if (isMobileDisplay) {
+      return 'w-18 h-18 sm:w-20 sm:h-20 rounded-2xl';
+    }
+
+    switch (itemsPerPage) {
+      case 2:
+      case 4:
+        return 'w-20 h-20 sm:w-24 sm:h-24 md:w-28 md:h-28 lg:w-36 lg:h-36 xl:w-44 xl:h-44 2xl:w-52 2xl:h-52 rounded-2xl lg:rounded-3xl';
+      case 10:
+      case 12:
+        return 'w-14 h-14 sm:w-16 sm:h-16 md:w-18 md:h-18 lg:w-20 lg:h-20 xl:w-24 xl:h-24 2xl:w-28 2xl:h-28 rounded-xl lg:rounded-2xl';
+      case 6:
+      case 8:
+      default:
+        return 'w-18 h-18 sm:w-20 sm:h-20 md:w-24 md:h-24 lg:w-28 lg:h-28 xl:w-36 xl:h-36 2xl:w-40 2xl:h-40 rounded-2xl lg:rounded-3xl';
+    }
+  };
+
   return (
-    <div className={`fixed inset-0 w-screen h-screen bg-slate-100 text-slate-900 flex flex-col font-sans p-3.5 md:p-5 select-none z-50 ${isMobileDisplay ? 'overflow-y-auto' : 'overflow-hidden'}`}>
+    <div className={`w-full bg-slate-100 text-slate-900 font-sans ${
+      isMobileDisplay
+        ? 'min-h-screen p-3 sm:p-4 pb-24 overflow-x-hidden'
+        : 'fixed inset-0 w-screen h-screen p-3.5 md:p-5 select-none overflow-hidden flex flex-col z-50'
+    }`}>
       
       {/* Top Progress Bar for Page Auto-Rotation */}
       {signageSettings.autoRotate && totalPages > 1 && !isPaused && !isMobileDisplay && (
@@ -413,22 +444,23 @@ export const SignageBoard: React.FC<SignageBoardProps> = ({ lecturers, onExit })
             </div>
           </div>
 
-          {/* Exit Display button */}
+          {/* Exit Display button - strictly hidden on mobile so visitors stay on mobile signage */}
           {!isMobileDisplay && (
             <button
               onClick={onExit}
-              className="flex items-center gap-1.5 px-3 py-1.5 bg-slate-100 hover:bg-slate-200 active:bg-slate-300 border border-slate-200 rounded-xl text-xs font-bold text-slate-700 cursor-pointer transition-all shadow-xs"
+              className="flex items-center gap-1.5 px-3 py-1.5 bg-slate-100 hover:bg-slate-200 active:bg-slate-300 border border-slate-200 rounded-xl text-xs font-bold text-slate-700 cursor-pointer transition-all shadow-xs shrink-0"
+              title="Return to regular portal"
             >
               <ArrowLeft className="w-3.5 h-3.5" />
-              Exit
+              <span>Exit</span>
             </button>
           )}
         </div>
 
       </header>
 
-      {/* Main Grid Space - Expanding Cards to fill 100% available TV display height */}
-      <main className="relative z-10 flex-grow overflow-hidden">
+      {/* Main Grid Space - Expanding Cards to fill 100% available TV display height or scroll naturally on mobile */}
+      <main className={`relative z-10 w-full ${isMobileDisplay ? 'h-auto pb-6' : 'flex-grow overflow-hidden'}`}>
         <AnimatePresence mode="wait">
           <motion.div
             key={currentPage}
@@ -454,7 +486,7 @@ export const SignageBoard: React.FC<SignageBoardProps> = ({ lecturers, onExit })
                   key={lect.id}
                   variants={cardVariants}
                   className={`bg-white border-[3px] shadow-[0_4px_18px_rgba(0,0,0,0.02)] hover:shadow-[0_8px_24px_rgba(0,0,0,0.05)] rounded-3xl p-3.5 md:p-4.5 flex flex-col justify-between transition-all duration-300 relative overflow-hidden ${
-                    signageSettings.expandToFill && !isMobileDisplay ? 'h-full min-h-0' : ''
+                    signageSettings.expandToFill && !isMobileDisplay ? 'h-full min-h-0' : 'h-auto min-h-[180px]'
                   } ${
                     isPlaceholder 
                       ? 'opacity-40 border-dashed border-slate-450 bg-slate-50' 
@@ -468,7 +500,7 @@ export const SignageBoard: React.FC<SignageBoardProps> = ({ lecturers, onExit })
                 
                 {/* Photo & Glow Ring */}
                 <div className="relative shrink-0">
-                  <div className={`w-18 h-18 md:w-22 md:h-22 rounded-2xl overflow-hidden bg-slate-100 flex items-center justify-center transition-all duration-300 border-2 ${
+                  <div className={`${getPhotoSizeClasses()} overflow-hidden bg-slate-100 flex items-center justify-center transition-all duration-300 border-2 ${
                     isPlaceholder 
                       ? 'border-slate-350' 
                       : !lect.isPresentToday
@@ -478,9 +510,9 @@ export const SignageBoard: React.FC<SignageBoardProps> = ({ lecturers, onExit })
                           : 'border-emerald-500 shadow-[0_0_12px_rgba(16,185,129,0.25)]'
                   }`}>
                     {isPlaceholder ? (
-                      <HelpCircle className="w-8 h-8 text-slate-400" />
+                      <HelpCircle className="w-7 h-7 md:w-8 md:h-8 lg:w-12 lg:h-12 xl:w-14 xl:h-14 text-slate-400" />
                     ) : !hasPhoto ? (
-                      <div className="w-full h-full flex items-center justify-center font-black text-xl tracking-wider text-slate-700 bg-slate-100">
+                      <div className="w-full h-full flex items-center justify-center font-black text-lg md:text-xl lg:text-2xl xl:text-3xl 2xl:text-4xl tracking-wider text-slate-700 bg-slate-100">
                         {lect.name.split(' ').map((n) => n[0]).slice(0, 2).join('').toUpperCase()}
                       </div>
                     ) : (
@@ -495,7 +527,7 @@ export const SignageBoard: React.FC<SignageBoardProps> = ({ lecturers, onExit })
 
                   {/* Pulsing beacon status dot */}
                   {!isPlaceholder && (
-                    <span className={`absolute -top-1.5 -right-1.5 h-5 w-5 rounded-full border-2 border-white flex items-center justify-center ${config.glowClass}`} />
+                    <span className={`absolute -top-1.5 -right-1.5 lg:-top-2 lg:-right-2 h-4 w-4 lg:h-5 lg:w-5 xl:h-6 xl:w-6 rounded-full border-2 lg:border-[3px] border-white flex items-center justify-center ${config.glowClass}`} />
                   )}
                 </div>
 

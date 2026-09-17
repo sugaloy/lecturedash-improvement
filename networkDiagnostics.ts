@@ -4,102 +4,201 @@ import { NetworkPresenceInfo, SubnetZoneRule, TracerouteHop } from "./src/types"
 
 const execAsync = promisify(exec);
 
+export const DEFAULT_SUBNET_MASK = "255.255.255.192";
+export const DEFAULT_SUBNET_CIDR = 26;
+export const DEFAULT_ROUTER_IP = "192.168.73.1";
+
+/**
+ * Calculates subnet division for any IPv4 address using CIDR prefix bits.
+ * For 255.255.255.192 (/26), each /24 class C block is partitioned into 4 distinct subnets:
+ * - Block 0: .0 - .63   (CIDR: .0/26, Gateway: .1)
+ * - Block 1: .64 - .127  (CIDR: .64/26, Gateway: .65)
+ * - Block 2: .128 - .191 (CIDR: .128/26, Gateway: .129)
+ * - Block 3: .192 - .255 (CIDR: .192/26, Gateway: .193)
+ */
+export function calculateSubnet(
+  ip: string,
+  maskBits: number = 26
+): {
+  baseIp: string;
+  cidr: string;
+  gatewayIp: string;
+  broadcastIp: string;
+  maskBits: number;
+  maskStr: string;
+  usableRange: string;
+  blockIndex: number;
+} {
+  const clean = (ip || "").trim();
+  const parts = clean.split(".").map((p) => parseInt(p, 10));
+
+  if (parts.length === 4 && parts.every((p) => !isNaN(p) && p >= 0 && p <= 255)) {
+    const validBits = Math.min(30, Math.max(16, maskBits));
+    const hostBits = 32 - validBits;
+    const blockSize = Math.pow(2, hostBits); // 64 for /26, 256 for /24
+
+    if (validBits >= 24) {
+      const lastOctet = parts[3];
+      const baseOctet = Math.floor(lastOctet / blockSize) * blockSize;
+      const broadcastOctet = baseOctet + blockSize - 1;
+      const blockIndex = Math.floor(lastOctet / blockSize);
+
+      const baseIp = `${parts[0]}.${parts[1]}.${parts[2]}.${baseOctet}`;
+      const cidr = `${baseIp}/${validBits}`;
+      const gatewayIp = `${parts[0]}.${parts[1]}.${parts[2]}.${baseOctet + 1}`;
+      const broadcastIp = `${parts[0]}.${parts[1]}.${parts[2]}.${broadcastOctet}`;
+      const usableRange = `${parts[0]}.${parts[1]}.${parts[2]}.${baseOctet + 1} - ${parts[0]}.${parts[1]}.${parts[2]}.${broadcastOctet - 1}`;
+
+      const maskOctet = 256 - blockSize;
+      const maskStr = `255.255.255.${maskOctet}`;
+
+      return {
+        baseIp,
+        cidr,
+        gatewayIp,
+        broadcastIp,
+        maskBits: validBits,
+        maskStr,
+        usableRange,
+        blockIndex,
+      };
+    }
+  }
+
+  // Fallback defaults to 192.168.73.0/26
+  return {
+    baseIp: "192.168.73.0",
+    cidr: "192.168.73.0/26",
+    gatewayIp: "192.168.73.1",
+    broadcastIp: "192.168.73.63",
+    maskBits: 26,
+    maskStr: "255.255.255.192",
+    usableRange: "192.168.73.1 - 192.168.73.62",
+    blockIndex: 0,
+  };
+}
+
 export const DEFAULT_SUBNET_RULES: SubnetZoneRule[] = [
+  // Primary 192.168.73.x (/26 Subnets - 255.255.255.192)
   {
-    id: "rule_lecturer_room",
-    name: "Lecturer Room Router (Direct AP)",
-    subnetCidrOrPrefix: "192.168.1.",
+    id: "rule_73_sub0_lecturer",
+    name: "Lecturer Room (Direct AP - Subnet .0/26)",
+    subnetCidrOrPrefix: "192.168.73.0/26",
     expectedHops: 1,
     zoneType: "lecturer_room",
-    description: "Direct connection to the Lecturer Room Router. Immediate physical presence in Ruang Dosen 1.",
+    description: "Direct Layer-2 association to the Lecturer Room Router (192.168.73.0 - .63 /26). Seated inside or beside Ruang Dosen.",
   },
   {
-    id: "rule_staff_room",
-    name: "Staff Room Access Point (Routed)",
-    subnetCidrOrPrefix: "192.168.2.",
+    id: "rule_73_sub1_staff",
+    name: "Staff Room Access Point (Subnet .64/26)",
+    subnetCidrOrPrefix: "192.168.73.64/26",
     expectedHops: 2,
     zoneType: "staff_room",
-    description: "Connected via Staff Room AP across the corridor. Packets traverse through the Lecturer Room Gateway to the Staff Room subnet.",
+    description: "Connected to the Staff Room AP across the corridor (192.168.73.64 - .127 /26). 2 hops via inter-AP gateway.",
   },
   {
-    id: "rule_corridor",
-    name: "Department Hallway / Lab 3 AP",
-    subnetCidrOrPrefix: "192.168.73.",
+    id: "rule_73_sub2_lab",
+    name: "Department Hallway / Lab AP (Subnet .128/26)",
+    subnetCidrOrPrefix: "192.168.73.128/26",
     expectedHops: 3,
     zoneType: "adjacent",
-    description: "Connected to the 6th-floor corridor distribution AP or Computer Lab router.",
+    description: "Connected to Corridor distribution AP or Computer Lab router (192.168.73.128 - .191 /26).",
+  },
+  {
+    id: "rule_73_sub3_guest",
+    name: "Campus Guest / Extra VLAN (Subnet .192/26)",
+    subnetCidrOrPrefix: "192.168.73.192/26",
+    expectedHops: 3,
+    zoneType: "remote",
+    description: "Connected to Campus Guest or External VLAN (192.168.73.192 - .255 /26).",
+  },
+  // Fallback 192.168.1.x (/26 Subnets)
+  {
+    id: "rule_1_sub0_lecturer",
+    name: "Lecturer Room Router (Direct AP - 192.168.1.0/26)",
+    subnetCidrOrPrefix: "192.168.1.0/26",
+    expectedHops: 1,
+    zoneType: "lecturer_room",
+    description: "Direct connection to Lecturer Room router on 192.168.1.x subnet.",
+  },
+  {
+    id: "rule_1_sub1_staff",
+    name: "Staff Room AP (192.168.1.64/26)",
+    subnetCidrOrPrefix: "192.168.1.64/26",
+    expectedHops: 2,
+    zoneType: "staff_room",
+    description: "Staff Room AP routed subnet on 192.168.1.64/26.",
   },
   {
     id: "rule_campus_guest",
-    name: "Campus Guest / External VLAN",
-    subnetCidrOrPrefix: "10.0.",
+    name: "Campus Guest / External VLAN (10.0.0.0/8)",
+    subnetCidrOrPrefix: "10.0.0.0/8",
     expectedHops: 3,
     zoneType: "remote",
     description: "Connected to institutional university backbone network or remote building.",
   },
 ];
 
-export const DEFAULT_ROUTER_IP = "192.168.1.1";
-
 /**
- * Extracts a normalized /24 subnet prefix and CIDR from any IPv4 address
+ * Extracts a normalized subnet CIDR and gateway using /26 division
  */
-export function extractSubnetPrefix(ip: string): { prefix: string; cidr: string; gatewayIp: string } {
-  const clean = (ip || "").trim();
-  const parts = clean.split(".");
-  if (parts.length === 4) {
-    const prefix = `${parts[0]}.${parts[1]}.${parts[2]}.`;
-    const cidr = `${parts[0]}.${parts[1]}.${parts[2]}.0/24`;
-    const gatewayIp = `${parts[0]}.${parts[1]}.${parts[2]}.1`;
-    return { prefix, cidr, gatewayIp };
-  }
-  return { prefix: "192.168.1.", cidr: "192.168.1.0/24", gatewayIp: "192.168.1.1" };
+export function extractSubnetPrefix(
+  ip: string,
+  maskBits: number = 26
+): { prefix: string; cidr: string; gatewayIp: string } {
+  const sub = calculateSubnet(ip, maskBits);
+  return {
+    prefix: sub.baseIp,
+    cidr: sub.cidr,
+    gatewayIp: sub.gatewayIp,
+  };
 }
 
 /**
- * Generates an auto-discovered subnet rule for unlisted subnets/classrooms
+ * Generates an auto-discovered subnet rule partitioned into /26 blocks
  */
 export function generateAutoDiscoveredSubnetRule(
   ip: string,
   hops: number = 1,
-  latencyMs: number = 2.4
+  latencyMs: number = 2.4,
+  maskBits: number = 26
 ): SubnetZoneRule {
-  const { prefix, cidr, gatewayIp } = extractSubnetPrefix(ip);
-  const safeId = `rule_auto_${prefix.replace(/\./g, "_")}`;
+  const sub = calculateSubnet(ip, maskBits);
+  const safeId = `rule_auto_${sub.cidr.replace(/[\.\/]/g, "_")}`;
 
   let name = "";
-  let zoneType: 'lecturer_room' | 'staff_room' | 'adjacent' | 'remote' = 'adjacent';
+  let zoneType: "lecturer_room" | "staff_room" | "adjacent" | "remote" = "adjacent";
   let description = "";
 
   if (hops === 1) {
-    name = `Direct AP (${cidr})`;
+    name = `Direct AP (${sub.cidr})`;
     zoneType = "lecturer_room";
-    description = `Auto-discovered Layer-2 local subnet (${cidr}). Direct connection without intermediate routing hops.`;
+    description = `Auto-discovered Layer-2 local subnet (${sub.cidr}, mask ${sub.maskStr}). Direct connection without intermediate routing hops. Gateway: ${sub.gatewayIp}`;
   } else if (hops === 2) {
-    name = `Adjacent Room / Staff AP (${cidr})`;
+    name = `Adjacent Room / Staff AP (${sub.cidr})`;
     zoneType = "staff_room";
-    description = `Auto-discovered adjacent access point subnet (${cidr}) reachable in 2 hops via gateway ${gatewayIp}.`;
+    description = `Auto-discovered adjacent access point subnet (${sub.cidr}, mask ${sub.maskStr}) reachable in 2 hops via gateway ${sub.gatewayIp}.`;
   } else if (hops === 3) {
-    name = `Classroom / Lecture Hall AP (${cidr})`;
+    name = `Classroom / Lab AP (${sub.cidr})`;
     zoneType = "adjacent";
-    description = `Auto-discovered teaching classroom or lecture hall subnet (${cidr}). Routed in 3 hops via floor distribution switch.`;
+    description = `Auto-discovered teaching classroom or lab subnet (${sub.cidr}, mask ${sub.maskStr}). Routed in 3 hops via floor distribution switch.`;
   } else {
-    name = `Campus Core / Remote Hall (${cidr})`;
+    name = `Campus Core / Remote Hall (${sub.cidr})`;
     zoneType = "remote";
-    description = `Auto-discovered distant campus network subnet (${cidr}). Multi-hop routing across campus backbone.`;
+    description = `Auto-discovered distant campus network subnet (${sub.cidr}, mask ${sub.maskStr}). Multi-hop routing across campus backbone.`;
   }
 
   return {
     id: safeId,
     name,
-    subnetCidrOrPrefix: prefix,
+    subnetCidrOrPrefix: sub.cidr,
     expectedHops: hops,
     zoneType,
     description,
     autoLearned: true,
     discoveredAt: Date.now(),
     deviceCount: 1,
-    gatewayHostname: `gateway-${prefix.replace(/\./g, "-")}lan`,
+    gatewayHostname: `gw-${sub.cidr.replace(/[\.\/]/g, "-")}.lan`,
   };
 }
 
@@ -107,21 +206,11 @@ export function generateAutoDiscoveredSubnetRule(
  * Checks if a target IP matches a rule's CIDR or prefix
  */
 export function matchesSubnet(ip: string, prefixOrCidr: string): boolean {
-  if (!ip) return false;
+  if (!ip || !prefixOrCidr) return false;
   const cleanIp = ip.trim();
   const cleanPrefix = prefixOrCidr.trim();
 
-  // Simple prefix match (e.g. "192.168.1.")
-  if (cleanPrefix.endsWith(".") && cleanIp.startsWith(cleanPrefix)) {
-    return true;
-  }
-
-  // Exact prefix match without trailing dot (e.g. "192.168.1")
-  if (cleanIp.startsWith(cleanPrefix + ".")) {
-    return true;
-  }
-
-  // CIDR match (e.g. "192.168.1.0/24")
+  // CIDR match (e.g. "192.168.73.0/26", "10.0.0.0/8")
   if (cleanPrefix.includes("/")) {
     try {
       const [subnetBase, maskStr] = cleanPrefix.split("/");
@@ -143,11 +232,22 @@ export function matchesSubnet(ip: string, prefixOrCidr: string): boolean {
     }
   }
 
+  // Simple prefix match (e.g. "192.168.1.")
+  if (cleanPrefix.endsWith(".") && cleanIp.startsWith(cleanPrefix)) {
+    return true;
+  }
+
+  // Exact prefix match without trailing dot (e.g. "192.168.1")
+  if (cleanIp.startsWith(cleanPrefix + ".")) {
+    return true;
+  }
+
   return cleanIp.includes(cleanPrefix);
 }
 
 /**
- * Resolves hop count, zone name, path, and diagnostic explanation based on subnet rules
+ * Resolves hop count, zone name, path, and diagnostic explanation based on subnet rules.
+ * For offline/undetected devices, returns clean offline status with 0 hops.
  */
 export function resolveNetworkPresence(
   ip: string,
@@ -155,14 +255,33 @@ export function resolveNetworkPresence(
   customRules: SubnetZoneRule[] = DEFAULT_SUBNET_RULES,
   routerIp: string = DEFAULT_ROUTER_IP,
   reportedHops?: number,
-  reportedLatency?: number
+  reportedLatency?: number,
+  isDeviceOnline: boolean = true
 ): NetworkPresenceInfo {
   const cleanIp = (ip || "").trim();
+
+  // If the device is not online/detected, do not fabricate active routing hops
+  if (!isDeviceOnline || !cleanIp) {
+    return {
+      ip: cleanIp || undefined,
+      mac,
+      hops: 0,
+      latencyMs: 0,
+      detectedZone: "Offline / Disconnected",
+      zoneType: "remote",
+      routerGatewayIp: routerIp,
+      traceroutePath: [],
+      lastTraced: Date.now(),
+      explanation: "Device is currently offline or not detected on the intranet Wi-Fi. No network routing hops active.",
+    };
+  }
+
   const matchedRule = customRules.find((rule) => matchesSubnet(cleanIp, rule.subnetCidrOrPrefix));
+  const subInfo = calculateSubnet(cleanIp, 26);
 
   let hops = reportedHops || 1;
   let zoneName = "Lecturer Room (Direct AP)";
-  let zoneType: 'lecturer_room' | 'staff_room' | 'adjacent' | 'remote' = 'lecturer_room';
+  let zoneType: "lecturer_room" | "staff_room" | "adjacent" | "remote" = "lecturer_room";
   let explanation = "";
   let latencyMs = reportedLatency || 2.4;
 
@@ -170,22 +289,25 @@ export function resolveNetworkPresence(
     hops = reportedHops || matchedRule.expectedHops;
     zoneName = matchedRule.name;
     zoneType = matchedRule.zoneType;
-  } else if (cleanIp.startsWith("192.168.1.")) {
-    hops = reportedHops || 1;
-    zoneName = "Lecturer Room Router (Direct AP)";
-    zoneType = "lecturer_room";
-  } else if (cleanIp.startsWith("192.168.2.")) {
-    hops = reportedHops || 2;
-    zoneName = "Staff Room Access Point (Routed)";
-    zoneType = "staff_room";
-  } else if (cleanIp.startsWith("192.168.73.") || cleanIp.startsWith("192.168.")) {
-    hops = reportedHops || 2;
-    zoneName = "Adjacent Office AP (Routed)";
-    zoneType = "adjacent";
-  } else if (cleanIp.startsWith("10.") || cleanIp.startsWith("172.")) {
-    hops = reportedHops || 3;
-    zoneName = "Campus Network VLAN (Multi-Hop)";
-    zoneType = "remote";
+  } else {
+    // Dynamic /26 block resolution
+    if (subInfo.blockIndex === 0) {
+      hops = reportedHops || 1;
+      zoneName = `Lecturer Room (Direct AP - ${subInfo.cidr})`;
+      zoneType = "lecturer_room";
+    } else if (subInfo.blockIndex === 1) {
+      hops = reportedHops || 2;
+      zoneName = `Staff Room AP (Routed - ${subInfo.cidr})`;
+      zoneType = "staff_room";
+    } else if (subInfo.blockIndex === 2) {
+      hops = reportedHops || 3;
+      zoneName = `Department Hallway / Lab AP (${subInfo.cidr})`;
+      zoneType = "adjacent";
+    } else {
+      hops = reportedHops || 3;
+      zoneName = `Campus Guest / Extra VLAN (${subInfo.cidr})`;
+      zoneType = "remote";
+    }
   }
 
   // Adjust latency based on hops if not reported by scanner
@@ -201,20 +323,19 @@ export function resolveNetworkPresence(
   if (hops === 1) {
     traceroutePath.push({
       hop: 1,
-      ip: cleanIp || "192.168.1.45",
+      ip: cleanIp,
       hostname: "lecturer-phone.lan",
       rttMs: latencyMs,
       status: "ok",
       isGateway: false,
-      label: "Direct Layer-2 Wi-Fi Association (Lecturer Room AP)",
+      label: `Direct Layer-2 Wi-Fi Association (${zoneName})`,
     });
-    explanation =
-      "Device is directly associated with the Lecturer Room Router / AP (1 hop). The lecturer is currently in or immediately beside Ruang Dosen 1.";
+    explanation = `Device is directly associated with the Lecturer Room AP (${subInfo.cidr}, mask 255.255.255.192). 1 hop, zero intermediate routers. Lecturer is in or beside Ruang Dosen.`;
   } else if (hops === 2) {
     const hop1Rtt = Number((1.1 + Math.random() * 0.8).toFixed(1));
     traceroutePath.push({
       hop: 1,
-      ip: routerIp || "192.168.1.1",
+      ip: routerIp || subInfo.gatewayIp,
       hostname: "gateway.ruang-dosen.lan",
       rttMs: hop1Rtt,
       status: "ok",
@@ -223,22 +344,21 @@ export function resolveNetworkPresence(
     });
     traceroutePath.push({
       hop: 2,
-      ip: cleanIp || "192.168.2.105",
+      ip: cleanIp,
       hostname: "staff-ap-node.lan",
       rttMs: latencyMs,
       status: "ok",
       isGateway: false,
-      label: "Staff Room AP Subnet Client",
+      label: `Staff Room AP Subnet Client (${subInfo.cidr})`,
     });
-    explanation =
-      "Device is routed through 1 intermediate router (2 hops total). It received an IP from the Staff Room AP. This happens when the device stays connected to the Staff Room Wi-Fi signal due to sticky roaming or when walking past the staff quarters.";
+    explanation = `Device is routed through 1 intermediate router (2 hops total). Connected to Staff Room AP (${subInfo.cidr}) via gateway ${subInfo.gatewayIp}.`;
   } else {
     // 3 or more hops
     const hop1Rtt = Number((1.1 + Math.random() * 0.6).toFixed(1));
     const hop2Rtt = Number((8.4 + Math.random() * 3.2).toFixed(1));
     traceroutePath.push({
       hop: 1,
-      ip: routerIp || "192.168.1.1",
+      ip: routerIp || "192.168.73.1",
       hostname: "gateway.ruang-dosen.lan",
       rttMs: hop1Rtt,
       status: "ok",
@@ -247,24 +367,23 @@ export function resolveNetworkPresence(
     });
     traceroutePath.push({
       hop: 2,
-      ip: "192.168.100.1",
-      hostname: "dist-switch-lt6.campus.lan",
+      ip: subInfo.gatewayIp,
+      hostname: "dist-switch.campus.lan",
       rttMs: hop2Rtt,
       status: "ok",
       isGateway: true,
-      label: "Floor 6 Core Distribution Switch",
+      label: "Department Distribution Switch",
     });
     traceroutePath.push({
       hop: 3,
-      ip: cleanIp || "192.168.73.50",
+      ip: cleanIp,
       hostname: "campus-client.lan",
       rttMs: latencyMs,
       status: "ok",
       isGateway: false,
-      label: "Remote AP Subnet Client",
+      label: `Remote AP Subnet Client (${subInfo.cidr})`,
     });
-    explanation =
-      "Device is 3 hops away from the Lecturer Room Router, traversing the building's floor distribution switch. The lecturer is in a remote corridor, lab, or meeting area.";
+    explanation = `Device is 3 hops away, traversing the building's floor distribution switch on subnet ${subInfo.cidr}. Lecturer is in a remote corridor, lab, or lecture hall.`;
   }
 
   return {
@@ -283,7 +402,7 @@ export function resolveNetworkPresence(
 
 /**
  * Runs a live network traceroute if system traceroute is available,
- * or ping probe, falling back to topology resolution.
+ * falling back to deterministic topology resolution.
  */
 export async function executeTracerouteProbe(
   targetIp: string,
@@ -293,7 +412,7 @@ export async function executeTracerouteProbe(
 ): Promise<NetworkPresenceInfo> {
   const cleanIp = (targetIp || "").trim();
   if (!cleanIp) {
-    return resolveNetworkPresence("192.168.1.100", mac, customRules, routerIp);
+    return resolveNetworkPresence("", mac, customRules, routerIp, undefined, undefined, false);
   }
 
   // Attempt system traceroute if installed
@@ -302,7 +421,7 @@ export async function executeTracerouteProbe(
       timeout: 3500,
     });
     const parsedHops: TracerouteHop[] = [];
-    const lines = stdout.split("\n").slice(1); // skip header line
+    const lines = stdout.split("\n").slice(1);
 
     for (const line of lines) {
       const match = line.trim().match(/^(\d+)\s+([0-9a-fA-F.:*]+)\s+([\d.]+)\s*ms/);
@@ -330,7 +449,8 @@ export async function executeTracerouteProbe(
         customRules,
         routerIp,
         detectedHops,
-        lastHop.rttMs
+        lastHop.rttMs,
+        true
       );
       baseInfo.traceroutePath = parsedHops;
       return baseInfo;
@@ -345,12 +465,13 @@ export async function executeTracerouteProbe(
     const matchTime = stdout.match(/time=([\d.]+)\s*ms/);
     if (matchTime) {
       const realLatency = parseFloat(matchTime[1]);
-      return resolveNetworkPresence(cleanIp, mac, customRules, routerIp, undefined, realLatency);
+      return resolveNetworkPresence(cleanIp, mac, customRules, routerIp, undefined, realLatency, true);
     }
   } catch {
-    // Host ping unreachable
+    // Host unreachable via ping -> return offline state
+    return resolveNetworkPresence(cleanIp, mac, customRules, routerIp, undefined, undefined, false);
   }
 
-  // Pure deterministic topology resolver (100% reliable for intranet multi-AP setups)
-  return resolveNetworkPresence(cleanIp, mac, customRules, routerIp);
+  // Deterministic topology resolver with /26 architecture
+  return resolveNetworkPresence(cleanIp, mac, customRules, routerIp, undefined, undefined, true);
 }

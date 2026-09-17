@@ -9,6 +9,9 @@ import { Lecturer, PresenceLog } from "./src/types";
 import {
   DEFAULT_ROUTER_IP,
   DEFAULT_SUBNET_RULES,
+  DEFAULT_SUBNET_MASK,
+  DEFAULT_SUBNET_CIDR,
+  calculateSubnet,
   executeTracerouteProbe,
   resolveNetworkPresence,
   generateAutoDiscoveredSubnetRule,
@@ -120,7 +123,7 @@ async function checkDailyReset() {
     
     const lastResetDate = dbData.system?.lastResetDate || "";
 
-    if (lastResetDate !== todayStr) {
+    if (lastResetDate && lastResetDate !== todayStr) {
       console.log(`[Daily Reset] Date changed from "${lastResetDate}" to "${todayStr}". Resetting lecturer presence...`);
       
       // Update all lecturers
@@ -130,7 +133,8 @@ async function checkDailyReset() {
         isDeviceDetected: false,
         status: "Out of Office", // Reset status to Out of Office
         customMessage: "",
-        firstSeenToday: undefined
+        firstSeenToday: undefined,
+        networkInfo: undefined // Ensure offline lecturers have no fake hops
       }));
 
       // Save system config with today's date
@@ -151,6 +155,13 @@ async function checkDailyReset() {
 
       await writeDbWithLogExport(dbData);
       console.log(`[Daily Reset] All lecturer presences reset successfully for ${todayStr}.`);
+    } else if (!lastResetDate) {
+      // First boot or freshly recovered database: initialize today's date WITHOUT clearing current presence
+      dbData.system = {
+        ...dbData.system,
+        lastResetDate: todayStr
+      };
+      await writeDb(dbData);
     }
   } catch (err) {
     console.error("Error performing daily reset check:", err);
@@ -209,11 +220,15 @@ app.post("/api/lecturers", async (req, res) => {
       const existing = dbData.lecturers[index];
       const isCheckingOut = lecturer.status === 'Out of Office' || !lecturer.isPresentToday;
       const isStatusChanged = existing.status !== lecturer.status;
+      const finalIsDeviceDetected = isCheckingOut ? false : (lecturer.isDeviceDetected !== undefined ? lecturer.isDeviceDetected : existing.isDeviceDetected);
+
       dbData.lecturers[index] = {
         ...existing,
         ...lecturer,
         // Preserve live device detection status unless explicitly checking out
-        isDeviceDetected: isCheckingOut ? false : existing.isDeviceDetected,
+        isDeviceDetected: finalIsDeviceDetected,
+        // Clear networkInfo if checked out or offline
+        networkInfo: (!finalIsDeviceDetected || isCheckingOut) ? undefined : (lecturer.networkInfo || existing.networkInfo),
         // Use incoming lastSeen directly if status changed or checking out or if they are manually Away/Meeting etc., otherwise preserve most recent
         lastSeen: (isStatusChanged || isCheckingOut || lecturer.status !== 'Available')
           ? (lecturer.lastSeen || Date.now())
@@ -222,6 +237,9 @@ app.post("/api/lecturers", async (req, res) => {
         firstSeenToday: existing.firstSeenToday || lecturer.firstSeenToday
       };
     } else {
+      if (!lecturer.isDeviceDetected || lecturer.status === 'Out of Office' || !lecturer.isPresentToday) {
+        lecturer.networkInfo = undefined;
+      }
       dbData.lecturers.push(lecturer);
     }
 
@@ -400,18 +418,19 @@ app.post("/api/db/import", async (req, res) => {
 // 8. Local network presence ping from Raspberry Pi
 app.post("/api/presence/report", async (req, res) => {
   await checkDailyReset();
-  const { devices } = req.body;
+  const { devices, bleDevices } = req.body;
   
   if (!Array.isArray(devices)) {
     return res.status(400).json({ error: "Invalid body. 'devices' array is required." });
   }
 
-  console.log(`[Presence Report] Received ${devices.length} active devices from scanning agent.`);
+  const bleCount = Array.isArray(bleDevices) ? bleDevices.length : 0;
+  console.log(`[Presence Report] Received ${devices.length} Wi-Fi devices and ${bleCount} passive BLE beacons.`);
 
   try {
     const now = Date.now();
 
-    // Update activeScannedDevices cache with current scans
+    // Update activeScannedDevices cache with current Wi-Fi scans
     devices.forEach((dev: { mac?: string; ip?: string; hops?: number; latencyMs?: number }) => {
       if (dev.mac) {
         const mac = dev.mac.toLowerCase().trim();
@@ -425,10 +444,30 @@ app.post("/api/presence/report", async (req, res) => {
           if (hops) activeScannedDevices[existingIdx].hops = hops;
           if (latencyMs) activeScannedDevices[existingIdx].latencyMs = latencyMs;
         } else {
-          activeScannedDevices.push({ mac, ip, timestamp: now, hops, latencyMs });
+          activeScannedDevices.push({ mac, ip, timestamp: now, hops, latencyMs, deviceType: 'wifi' });
         }
       }
     });
+
+    // Update activeScannedDevices cache with passive BLE scans
+    const reportedBleMacs = new Map<string, number>(); // mac -> rssi
+    if (Array.isArray(bleDevices)) {
+      bleDevices.forEach((b: { mac?: string; rssi?: number }) => {
+        if (b.mac) {
+          const bleMac = b.mac.toLowerCase().trim();
+          const rssi = typeof b.rssi === 'number' ? b.rssi : -65;
+          reportedBleMacs.set(bleMac, rssi);
+
+          const existingIdx = activeScannedDevices.findIndex(d => d.mac === bleMac);
+          if (existingIdx > -1) {
+            activeScannedDevices[existingIdx].timestamp = now;
+            (activeScannedDevices[existingIdx] as any).rssi = rssi;
+          } else {
+            activeScannedDevices.push({ mac: bleMac, ip: "BLE-Beacon", timestamp: now, deviceType: 'ble', rssi } as any);
+          }
+        }
+      });
+    }
 
     // Clean up older than 15 minutes
     const fifteenMinsAgo = now - 15 * 60 * 1000;
@@ -445,21 +484,28 @@ app.post("/api/presence/report", async (req, res) => {
 
     // Fetch all lecturers from local db
     const dbData = await readDb();
-    const results: Array<{ name: string; detected: boolean; updated: boolean; hops?: number; zone?: string }> = [];
+    const results: Array<{ name: string; detected: boolean; updated: boolean; method?: string; hops?: number; zone?: string }> = [];
 
     dbData.lecturers.forEach((lect) => {
       const name = lect.name || "Unknown";
       const regMac = (lect.macAddress || "").toLowerCase().trim();
       const regSecMac = (lect.secondaryMacAddress || "").toLowerCase().trim();
+      const regBleMac = (lect.bleBeaconMac || "").toLowerCase().trim();
       const regIp = (lect.ipAddress || "").trim();
 
-      // Determine if this lecturer's device is in the reported list (EITHER MAC or IP matches)
+      // Check BLE Proximity Match (Passive RF Beacon Badge / Smartwatch)
+      const isBleDetected = !!regBleMac && reportedBleMacs.has(regBleMac);
+      const bleRssi = isBleDetected ? reportedBleMacs.get(regBleMac) : undefined;
+
+      // Determine if this lecturer's device is in the reported list (BLE, Wi-Fi MAC, or IP)
       const matchedMac = 
         (regMac && reportedMacs.has(regMac)) ? regMac :
         (regSecMac && reportedMacs.has(regSecMac)) ? regSecMac : null;
 
-      const isDetectedNow = !!matchedMac || (!!regIp && reportedIps.has(regIp));
-      const activeIdentifier = matchedMac || regIp || regMac || regSecMac;
+      const isWifiDetected = !!matchedMac || (!!regIp && reportedIps.has(regIp));
+      const isDetectedNow = isBleDetected || isWifiDetected;
+      const detectionMethod: 'ble' | 'wifi' = isBleDetected ? 'ble' : 'wifi';
+      const activeIdentifier = isBleDetected ? `BLE:${regBleMac}` : (matchedMac || regIp || regMac || regSecMac);
 
       const wasDetected = !!lect.isDeviceDetected;
       const wasPresentToday = !!lect.isPresentToday;
@@ -468,39 +514,71 @@ app.post("/api/presence/report", async (req, res) => {
 
       if (isDetectedNow) {
         lect.isDeviceDetected = true;
+        lect.detectionMethod = detectionMethod;
 
-        // Extract reported IP, hops, or latency if provided by scanner
-        const matchedDev = devices.find((d: { mac?: string; ip?: string; hops?: number; latencyMs?: number }) => {
-          const devMac = (d.mac || "").toLowerCase().trim();
-          const devIp = (d.ip || "").trim();
-          return (matchedMac && devMac === matchedMac) || (regIp && devIp === regIp);
-        });
+        if (isBleDetected) {
+          // Physical room proximity via BLE beacon
+          lect.networkInfo = {
+            ip: lect.ipAddress || "BLE-Direct",
+            mac: regBleMac,
+            hops: 1,
+            latencyMs: 0.8,
+            detectedZone: "Lecturer Room (BLE Proximity Badge)",
+            zoneType: "lecturer_room",
+            routerGatewayIp: dbData.system.routerIp || DEFAULT_ROUTER_IP,
+            traceroutePath: [{
+              hop: 1,
+              ip: "BLE-Direct",
+              hostname: "ble-badge.local",
+              rttMs: 0.8,
+              status: "ok",
+              isGateway: false,
+              label: `Direct BLE Proximity Beacon (${bleRssi} dBm)`,
+            }],
+            lastTraced: now,
+            explanation: `Lecturer physically detected inside Ruang Dosen via passive Bluetooth Low Energy RF beacon (${bleRssi} dBm). Zero pairing required.`,
+            isOnline: true,
+            detectionMethod: 'ble',
+            rssi: bleRssi,
+          };
+        } else {
+          // Wi-Fi detection
+          const matchedDev = devices.find((d: { mac?: string; ip?: string; hops?: number; latencyMs?: number }) => {
+            const devMac = (d.mac || "").toLowerCase().trim();
+            const devIp = (d.ip || "").trim();
+            return (matchedMac && devMac === matchedMac) || (regIp && devIp === regIp);
+          });
 
-        const activeIp = (matchedDev && matchedDev.ip) ? matchedDev.ip : (lect.ipAddress || "192.168.1.50");
-        lect.ipAddress = activeIp;
+          const activeIp = (matchedDev && matchedDev.ip) ? matchedDev.ip : (lect.ipAddress || "192.168.1.50");
+          lect.ipAddress = activeIp;
 
-        // Autonomous Room Subnet Auto-Learning (Discovers classrooms and APs automatically)
-        const isAutoDiscoverEnabled = dbData.system.autoDiscoverSubnets !== false;
-        if (isAutoDiscoverEnabled && activeIp) {
-          if (!dbData.system.subnetZoneRules) dbData.system.subnetZoneRules = [...DEFAULT_SUBNET_RULES];
-          const matchedRule = dbData.system.subnetZoneRules.find(r => matchesSubnet(activeIp, r.subnetCidrOrPrefix));
-          if (!matchedRule) {
-            const detectedHops = matchedDev?.hops || (activeIp.startsWith("192.168.1.") ? 1 : activeIp.startsWith("192.168.2.") ? 2 : 3);
-            const newRoomRule = generateAutoDiscoveredSubnetRule(activeIp, detectedHops, matchedDev?.latencyMs);
-            dbData.system.subnetZoneRules.push(newRoomRule);
-          } else {
-            matchedRule.deviceCount = (matchedRule.deviceCount || 0) + 1;
+          // Autonomous Room Subnet Auto-Learning (Discovers classrooms and APs automatically with /26 mask)
+          const isAutoDiscoverEnabled = dbData.system.autoDiscoverSubnets !== false;
+          const maskBits = dbData.system.subnetCidrBits || DEFAULT_SUBNET_CIDR;
+          if (isAutoDiscoverEnabled && activeIp) {
+            if (!dbData.system.subnetZoneRules) dbData.system.subnetZoneRules = [...DEFAULT_SUBNET_RULES];
+            const matchedRule = dbData.system.subnetZoneRules.find(r => matchesSubnet(activeIp, r.subnetCidrOrPrefix));
+            if (!matchedRule) {
+              const sub = calculateSubnet(activeIp, maskBits);
+              const detectedHops = matchedDev?.hops || (sub.blockIndex === 0 ? 1 : sub.blockIndex === 1 ? 2 : 3);
+              const newRoomRule = generateAutoDiscoveredSubnetRule(activeIp, detectedHops, matchedDev?.latencyMs, maskBits);
+              dbData.system.subnetZoneRules.push(newRoomRule);
+            } else {
+              matchedRule.deviceCount = (matchedRule.deviceCount || 0) + 1;
+            }
           }
-        }
 
-        lect.networkInfo = resolveNetworkPresence(
-          activeIp,
-          matchedMac || lect.macAddress,
-          dbData.system.subnetZoneRules || DEFAULT_SUBNET_RULES,
-          dbData.system.routerIp || DEFAULT_ROUTER_IP,
-          matchedDev ? matchedDev.hops : undefined,
-          matchedDev ? matchedDev.latencyMs : undefined
-        );
+          lect.networkInfo = resolveNetworkPresence(
+            activeIp,
+            matchedMac || lect.macAddress,
+            dbData.system.subnetZoneRules || DEFAULT_SUBNET_RULES,
+            dbData.system.routerIp || DEFAULT_ROUTER_IP,
+            matchedDev ? matchedDev.hops : undefined,
+            matchedDev ? matchedDev.latencyMs : undefined,
+            true
+          );
+          lect.networkInfo.detectionMethod = 'wifi';
+        }
         
         // Set firstSeenToday if not already set today
         if (!lect.firstSeenToday) {
@@ -522,12 +600,11 @@ app.post("/api/presence/report", async (req, res) => {
             lecturerName: name,
             action: "device_detected",
             timestamp: now,
-            details: `Device (${activeIdentifier} / ${activeIp}) auto-detected on ${lect.networkInfo.detectedZone} (${lect.networkInfo.hops} hop). Lecturer checked in.`
+            details: `Device (${activeIdentifier}) auto-detected on ${lect.networkInfo?.detectedZone} via ${detectionMethod.toUpperCase()}. Lecturer checked in.`
           });
         } else {
           // They are already checked in.
           // Pausing rule: Only update lastSeen timestamp if their current status is "Available".
-          // This keeps lastSeen "paused" when they manually set their status to Away, Meeting, or Teaching Class.
           if (lect.status === "Available") {
             lect.lastSeen = now;
             shouldUpdate = true;
@@ -541,7 +618,7 @@ app.post("/api/presence/report", async (req, res) => {
               lecturerName: name,
               action: "device_detected",
               timestamp: now,
-              details: `Device (${activeIdentifier} / ${activeIp}) re-connected on ${lect.networkInfo.detectedZone} (${lect.networkInfo.hops} hop).`
+              details: `Device (${activeIdentifier}) re-connected on ${lect.networkInfo?.detectedZone} via ${detectionMethod.toUpperCase()}.`
             });
             shouldUpdate = true;
           }
@@ -549,11 +626,18 @@ app.post("/api/presence/report", async (req, res) => {
         
         shouldUpdate = true;
       } else {
-        // Device is NOT detected now.
-        // If they were marked as detected, mark them as lost.
-        if (wasDetected) {
+        // Device is NOT detected via Wi-Fi or BLE now.
+        // Physical RFID Override Protection: If lecturer recently tapped RFID (within 20 mins), protect presence!
+        const isRfidProtected = !!lect.rfidOverrideUntil && now < lect.rfidOverrideUntil;
+
+        if (isRfidProtected) {
+          // Retain physical presence state; do NOT flip to Auto-Away
+          lect.isDeviceDetected = true;
+          lect.detectionMethod = 'rfid';
+        } else if (wasDetected) {
           lect.isDeviceDetected = false;
-          // Keep base status as available (do not set to 'Away' automatically)
+          lect.networkInfo = undefined; // Clear networkInfo for offline/lost device
+          lect.detectionMethod = undefined;
           shouldUpdate = true;
 
           dbData.logs.push({
@@ -562,7 +646,7 @@ app.post("/api/presence/report", async (req, res) => {
             lecturerName: name,
             action: "device_lost",
             timestamp: now,
-            details: `Device (${activeIdentifier}) disconnected or went to sleep.`
+            details: `Device (${activeIdentifier}) moved out of range or disconnected.`
           });
         }
       }
@@ -571,6 +655,7 @@ app.post("/api/presence/report", async (req, res) => {
         name,
         detected: isDetectedNow,
         updated: shouldUpdate,
+        method: lect.detectionMethod,
         hops: lect.networkInfo?.hops,
         zone: lect.networkInfo?.detectedZone
       });
@@ -581,6 +666,7 @@ app.post("/api/presence/report", async (req, res) => {
   } catch (error: any) {
     console.error("Error in presence report API:", error);
     res.status(500).json({ error: error.message });
+
   }
 });
 
@@ -644,8 +730,11 @@ app.post("/api/presence/rfid", async (req, res) => {
 
     // Set updated parameters
     lecturer.isPresentToday = true;
-    lecturer.isDeviceDetected = true; // Assume presence if physical card is tapped
+    lecturer.isDeviceDetected = true; // Assume physical presence when card is tapped
     lecturer.status = newStatus;
+    lecturer.detectionMethod = 'rfid';
+    // If set to Available, grant 20-minute physical presence immunity so Wi-Fi sleep doesn't flip to Auto-Away
+    lecturer.rfidOverrideUntil = newStatus === 'Available' ? now + (20 * 60 * 1000) : undefined;
     lecturer.lastSeen = now;
     if (!lecturer.firstSeenToday) {
       lecturer.firstSeenToday = now;
@@ -836,6 +925,8 @@ app.get("/api/network/config", async (req, res) => {
     res.json({
       success: true,
       routerIp: dbData.system.routerIp || DEFAULT_ROUTER_IP,
+      subnetMask: dbData.system.subnetMask || DEFAULT_SUBNET_MASK,
+      subnetCidrBits: dbData.system.subnetCidrBits || DEFAULT_SUBNET_CIDR,
       subnetZoneRules: dbData.system.subnetZoneRules || DEFAULT_SUBNET_RULES,
       autoDiscoverSubnets: dbData.system.autoDiscoverSubnets !== false,
       activeScannedDevices,
@@ -865,10 +956,16 @@ app.post("/api/network/config", async (req, res) => {
       });
     }
 
-    const { routerIp, subnetZoneRules, autoDiscoverSubnets } = req.body;
+    const { routerIp, subnetMask, subnetCidrBits, subnetZoneRules, autoDiscoverSubnets } = req.body;
     const dbData = await readDb();
     if (routerIp && typeof routerIp === "string") {
       dbData.system.routerIp = routerIp.trim();
+    }
+    if (subnetMask && typeof subnetMask === "string") {
+      dbData.system.subnetMask = subnetMask.trim();
+    }
+    if (typeof subnetCidrBits === "number" && subnetCidrBits >= 16 && subnetCidrBits <= 30) {
+      dbData.system.subnetCidrBits = subnetCidrBits;
     }
     if (Array.isArray(subnetZoneRules)) {
       dbData.system.subnetZoneRules = subnetZoneRules;
@@ -881,6 +978,8 @@ app.post("/api/network/config", async (req, res) => {
       success: true,
       message: "Network AP subnet rules updated successfully.",
       routerIp: dbData.system.routerIp,
+      subnetMask: dbData.system.subnetMask,
+      subnetCidrBits: dbData.system.subnetCidrBits,
       subnetZoneRules: dbData.system.subnetZoneRules,
       autoDiscoverSubnets: dbData.system.autoDiscoverSubnets !== false,
     });
@@ -889,7 +988,7 @@ app.post("/api/network/config", async (req, res) => {
   }
 });
 
-// 9.8. Autonomous Classroom & Subnet Auto-Sweep Endpoint
+// 9.8. Autonomous Classroom & Subnet Auto-Sweep Endpoint (/26 subnet partitioning)
 app.post("/api/network/auto-sweep", async (req, res) => {
   try {
     if (!isAuthorizedAdmin(req)) {
@@ -904,23 +1003,26 @@ app.post("/api/network/auto-sweep", async (req, res) => {
     const candidateSubnets: string[] = Array.isArray(subnets) && subnets.length > 0
       ? subnets
       : [
-          "192.168.1.0/24", // Lecturer Room
-          "192.168.2.0/24", // Staff Room AP
-          "192.168.3.0/24", // Classroom 301 / Lab
-          "192.168.4.0/24", // Classroom 302
-          "192.168.10.0/24", // Lecture Hall / Auditorium
-          "192.168.73.0/24", // Corridor AP
+          "192.168.73.0/26",   // Lecturer Room Direct AP (.0 - .63)
+          "192.168.73.64/26",  // Staff Room AP (.64 - .127)
+          "192.168.73.128/26", // Department Hallway / Lab AP (.128 - .191)
+          "192.168.73.192/26", // Campus Guest / Extra VLAN (.192 - .255)
+          "192.168.1.0/26",    // Secondary AP
+          "192.168.2.0/26",    // Secondary Staff AP
         ];
 
     const newlyDiscovered: any[] = [];
     if (!dbData.system.subnetZoneRules) dbData.system.subnetZoneRules = [...DEFAULT_SUBNET_RULES];
+    const maskBits = dbData.system.subnetCidrBits || DEFAULT_SUBNET_CIDR;
 
     for (const sub of candidateSubnets) {
-      const baseIp = sub.split("/")[0].replace(/\.0$/, ".25");
+      const parts = sub.split("/");
+      const baseIp = parts[0];
       const matched = dbData.system.subnetZoneRules.find((r) => matchesSubnet(baseIp, r.subnetCidrOrPrefix));
       if (!matched) {
-        const hops = baseIp.startsWith("192.168.1.") ? 1 : baseIp.startsWith("192.168.2.") ? 2 : 3;
-        const autoRule = generateAutoDiscoveredSubnetRule(baseIp, hops);
+        const subCalc = calculateSubnet(baseIp, maskBits);
+        const hops = subCalc.blockIndex === 0 ? 1 : subCalc.blockIndex === 1 ? 2 : 3;
+        const autoRule = generateAutoDiscoveredSubnetRule(baseIp, hops, undefined, maskBits);
         dbData.system.subnetZoneRules.push(autoRule);
         newlyDiscovered.push(autoRule);
       }

@@ -163,7 +163,7 @@ SERVER_URL = os.environ.get("PRESENCE_SERVER_URL", "__SERVER_URL__/api/presence/
 CONFIG_URL = os.environ.get("PRESENCE_CONFIG_URL", "__SERVER_URL__/api/network/config")
 SCAN_INTERVAL = 60
 AUTO_DISCOVER = True
-DEFAULT_SUBNETS = ["192.168.1.0/24", "192.168.2.0/24"]
+DEFAULT_SUBNETS = ["192.168.73.0/26", "192.168.73.64/26", "192.168.73.128/26", "192.168.73.192/26"]
 
 def discover_subnets():
     subnets = set()
@@ -187,7 +187,10 @@ def discover_subnets():
                 if "/" in p:
                     subnets.add(p)
                 elif p.endswith("."):
-                    subnets.add(f"{p}0/24")
+                    subnets.add(f"{p}0/26")
+                    subnets.add(f"{p}64/26")
+                    subnets.add(f"{p}128/26")
+                    subnets.add(f"{p}192/26")
     except Exception:
         pass
 
@@ -199,11 +202,20 @@ def get_hops(ip):
     try:
         res = subprocess.run(["traceroute", "-n", "-m", "4", "-w", "1", ip], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=3)
         lines = [l for l in res.stdout.decode("utf-8").splitlines() if re.match(r"^\s*\d+", l)]
-        return max(1, len(lines))
+        if lines:
+            return max(1, len(lines))
     except Exception:
-        if ip.startswith("192.168.1."): return 1
-        if ip.startswith("192.168.2."): return 2
-        return 3
+        pass
+
+    # Deterministic fallback based on 255.255.255.192 (/26) subnet blocks:
+    try:
+        last_octet = int(ip.split(".")[-1])
+        block = last_octet // 64
+        if block == 0: return 1   # .0 - .63   -> 1 Hop (Direct Room AP)
+        elif block == 1: return 2 # .64 - .127 -> 2 Hops (Staff Room AP)
+        else: return 3            # .128 - .255 -> 3 Hops (Lab / Corridor AP)
+    except Exception:
+        return 1
 
 def scan_network():
     active_subnets = discover_subnets() if AUTO_DISCOVER else DEFAULT_SUBNETS
@@ -375,6 +387,13 @@ EOF
 
 # If running in all-in-one mode and package.json is present, ensure web service is active
 if [ -f "$INSTALL_DIR/package.json" ]; then
+  echo -e "${CLR_CYAN}[*] Installing Node dependencies and building production bundle in $INSTALL_DIR...${CLR_RESET}"
+  if command -v npm >/dev/null 2>&1; then
+    (cd "$INSTALL_DIR" && npm install --no-fund --no-audit && npm run build) || true
+  else
+    echo -e "${CLR_YELLOW}[!] npm not found. Skipping build step.${CLR_RESET}"
+  fi
+
   cat << EOF > /etc/systemd/system/lecturedash.service
 [Unit]
 Description=Lecturer Presence Signage Web App
